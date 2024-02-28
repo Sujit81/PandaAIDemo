@@ -31,7 +31,26 @@ df = SmartDatalake([df2], config={"llm": llm})
 # print(response)
 # print("\n\n")
 
-response = df.chat("Location column values matching Pune and Wakad")
+#response = df.chat("Location column values matching Pune and Wakad")
 
-#response = df.chat("Please compare each column in first dataframe with all columns in dataframes and show me percentage match for each column? Show in tabular format with columns of dataframes in order completely ")
+response = df.chat("Please compare each column in first dataframe with all columns in dataframes and show me percentage match for each column? Show in tabular format with columns of dataframes in order completely ")
 print(response)
+
+#Output -
+#  Column1     Column2  Match Percentage
+# 0   EmployeeID  EmployeeID        100.000000
+# 1   EmployeeID     Salary2          0.000000
+# 2   EmployeeID     Village          0.000000
+# 3   EmployeeID    Location          0.000000
+# 4      Salary2  EmployeeID          0.000000
+# 5      Salary2     Salary2        100.000000
+# 6      Salary2     Village          0.000000
+# 7      Salary2    Location          0.000000
+# 8      Village  EmployeeID          0.000000
+# 9      Village     Salary2          0.000000
+# 10     Village     Village        100.000000
+# 11     Village    Location         16.666667
+# 12    Location  EmployeeID          0.000000
+# 13    Location     Salary2          0.000000
+# 14    Location     Village         16.666667
+# 15    Location    Location        100.000000

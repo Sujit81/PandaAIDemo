@@ -28,3 +28,5 @@ llm = OpenAI(api_token=os.getenv("OPENAI_API_KEY"))  # Get API token from https:
 df = SmartDatalake([employees_df, salaries_df], config={"llm": llm})
 response = df.chat("Who gets paid the most?")
 print(response)
+#Output
+# The highest paid employee is Olivia with a salary of 7000.

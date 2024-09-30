@@ -1,0 +1,62 @@
+import org.apache.sshd.client.SshClient;
+import org.apache.sshd.client.session.ClientSession;
+import org.apache.sshd.common.keyprovider.FileKeyPairProvider;
+import org.apache.sshd.sftp.client.SftpClient;
+import org.apache.sshd.sftp.client.SftpClientFactory;
+
+public class MINAKeyConnect {
+
+    public static void main(String[] args) throws Exception {
+
+String sftpHost = "your_sftp_host";
+String sftpPort = "your_sftp_port";
+String sftpUser = "your_sftp_username";
+String privateKey = "your_private_key_content";
+String passphrase = "your_passphrase";
+String sftpPath = "your_sftp_path";
+
+// Initialize SSH client
+SshClient client = SshClient.setUpDefaultClient();
+client.start();
+
+// Optional Step. Refer the note.
+// Get current directory to store temporary private key file
+String currentDirectory = System.getProperty("user.dir");
+String currentFile = currentDirectory + "/private_key.txt";
+
+// Write the private key to a temporary file
+Files.write(Paths.get(currentFile), privateKey.getBytes(StandardCharsets.UTF_8));
+FileKeyPairProvider keyPairProvider = new FileKeyPairProvider(Paths.get(currentFile));
+client.setKeyIdentityProvider(keyPairProvider);
+
+
+// Connect to the SFTP server
+ClientSession session = client.connect(sftpUser, sftpHost, Integer.parseInt(sftpPort)).verify().getSession();
+session.addPasswordIdentity(passphrase); // Passphrase for private key
+session.auth().verify();
+
+// Create an SFTP client session
+SftpClient sftpClient = SftpClientFactory.instance().createSftpClient(session);
+SftpClient.CloseableHandle dirHandle = sftpClient.openDir(sftpPath);
+List<SftpClient.DirEntry> files = StreamSupport.stream(sftpClient.listDir(dirHandle).spliterator(), false)
+                    .collect(Collectors.toList());
+
+// perform all your sftp operation like reading all files and copying to destination path
+
+// Close the SFTP client
+sftpClient.close();
+
+
+// Remove the RSA private key file after all SFTP operations
+File privateKeyFile = new File(currentFile);
+if (privateKeyFile.exists()) {
+                boolean isDeleted = privateKeyFile.delete();
+                if (isDeleted) {
+                    System.out.println("Completed Successfully");
+                } 
+            } 
+
+// Close the SSH session
+session.close();
+  }
+}

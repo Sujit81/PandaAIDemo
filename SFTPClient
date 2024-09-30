@@ -1,0 +1,101 @@
+import org.apache.sshd.client.SshClient;
+import org.apache.sshd.client.session.ClientSession;
+import org.apache.sshd.sftp.client.SftpClient;
+import org.apache.sshd.sftp.client.SftpClientFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+public class SftpClientWithKeyAuth {
+    private static final Logger logger = LoggerFactory.getLogger(SftpClientWithKeyAuth.class);
+    private static final String HOST = "localhost";
+    private static final int PORT = 2222;
+    private static final String USERNAME = "your_username";
+    private static final String PRIVATE_KEY_PATH = "path/to/your/private_key";
+
+    private final SshClient client;
+
+    public SftpClientWithKeyAuth() {
+        this.client = SshClient.setUpDefaultClient();
+    }
+
+    public void connect() throws IOException {
+        client.start();
+        ClientSession session = client.connect(USERNAME, HOST, PORT)
+                .verify(10000)
+                .getSession();
+
+        session.addPublicKeyIdentity(Paths.get(PRIVATE_KEY_PATH));
+        session.auth().verify(30000);
+
+        logger.info("Successfully connected to SFTP server");
+    }
+
+    public void uploadFile(String localFilePath, String remoteFilePath) throws IOException {
+        try (ClientSession session = client.connect(USERNAME, HOST, PORT).verify(10000).getSession()) {
+            session.addPublicKeyIdentity(Paths.get(PRIVATE_KEY_PATH));
+            session.auth().verify(30000);
+
+            SftpClient sftpClient = SftpClientFactory.instance().createSftpClient(session);
+
+            try (InputStream inputStream = Files.newInputStream(Paths.get(localFilePath));
+                 OutputStream outputStream = sftpClient.write(remoteFilePath)) {
+
+                byte[] buffer = new byte[8192];
+                int length;
+                while ((length = inputStream.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, length);
+                }
+            }
+
+            logger.info("File uploaded successfully: {}", remoteFilePath);
+        }
+    }
+
+    public void downloadFile(String remoteFilePath, String localFilePath) throws IOException {
+        try (ClientSession session = client.connect(USERNAME, HOST, PORT).verify(10000).getSession()) {
+            session.addPublicKeyIdentity(Paths.get(PRIVATE_KEY_PATH));
+            session.auth().verify(30000);
+
+            SftpClient sftpClient = SftpClientFactory.instance().createSftpClient(session);
+
+            try (InputStream inputStream = sftpClient.read(remoteFilePath);
+                 OutputStream outputStream = Files.newOutputStream(Paths.get(localFilePath))) {
+
+                byte[] buffer = new byte[8192];
+                int length;
+                while ((length = inputStream.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, length);
+                }
+            }
+
+            logger.info("File downloaded successfully: {}", localFilePath);
+        }
+    }
+
+    public void disconnect() throws IOException {
+        client.stop();
+        logger.info("Disconnected from SFTP server");
+    }
+
+    public static void main(String[] args) {
+        SftpClientWithKeyAuth client = new SftpClientWithKeyAuth();
+        try {
+            client.connect();
+
+            // Example usage
+            client.uploadFile("path/to/local/file.txt", "/remote/path/file.txt");
+            client.downloadFile("/remote/path/file.txt", "path/to/local/downloaded_file.txt");
+
+            client.disconnect();
+        } catch (IOException e) {
+            logger.error("Error occurred during SFTP operations", e);
+        }
+    }
+}

@@ -1,8 +1,10 @@
 import org.apache.sshd.server.SshServer;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
-import org.apache.sshd.server.auth.pubkeycements;
+import org.apache.sshd.server.auth.pubkey.PublickeyAuthenticator;
 import org.apache.sshd.server.session.ServerSession;
 import org.apache.sshd.sftp.server.SftpSubsystemFactory;
+import org.apache.sshd.server.session.SessionFactory;
+import org.apache.sshd.server.channel.ChannelSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,11 +51,18 @@ public class CompleteSftpServer {
         SftpSubsystemFactory factory = new SftpSubsystemFactory();
         sshd.setSubsystemFactories(Collections.singletonList(factory));
 
-        Path rootDir = Paths.get(SFTP_ROOT_DIR);
+        Path rootDir = Paths.get(SFTP_ROOT_DIR).toAbsolutePath();
         if (!Files.exists(rootDir)) {
             Files.createDirectories(rootDir);
         }
-        factory.setHomeDir(rootDir);
+
+        // Set up a custom SessionFactory to provide the home directory
+        SessionFactory sessionFactory = new SessionFactory(sshd);
+        sessionFactory.setHomeDirectoryProvider(session -> rootDir);
+        sshd.setSessionFactory(sessionFactory);
+
+        // Add a channel session factory to handle file-system related operations
+        sshd.setChannelFactories(Collections.singletonList(ChannelSession.getFactory()));
     }
 
     private class CustomPublicKeyAuthenticator implements PublickeyAuthenticator {

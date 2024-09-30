@@ -1,0 +1,78 @@
+import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
+import org.apache.sshd.server.auth.pubkeycements;
+import org.apache.sshd.server.session.ServerSession;
+import org.apache.sshd.sftp.server.SftpSubsystemFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.PublicKey;
+import java.util.Collections;
+import java.util.Base64;
+
+public class CompleteSftpServer {
+    private static final Logger logger = LoggerFactory.getLogger(CompleteSftpServer.class);
+    private static final int PORT = 2222;
+    private static final String HOST_KEY_FILE = "hostkey.ser";
+    private static final String SFTP_ROOT_DIR = "sftp-root";
+    private static final String AUTHORIZED_KEYS_FILE = "authorized_keys";
+
+    public static void main(String[] args) {
+        CompleteSftpServer server = new CompleteSftpServer();
+        server.start();
+    }
+
+    public void start() {
+        try {
+            SshServer sshd = SshServer.setUpDefaultServer();
+            configureSshServer(sshd);
+            sshd.start();
+            logger.info("SFTP server started on port {}", sshd.getPort());
+        } catch (IOException e) {
+            logger.error("Failed to start SFTP server", e);
+        }
+    }
+
+    private void configureSshServer(SshServer sshd) throws IOException {
+        sshd.setPort(PORT);
+        sshd.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(new File(HOST_KEY_FILE)));
+        sshd.setPublickeyAuthenticator(new CustomPublicKeyAuthenticator());
+        configureSftpSubsystem(sshd);
+    }
+
+    private void configureSftpSubsystem(SshServer sshd) throws IOException {
+        SftpSubsystemFactory factory = new SftpSubsystemFactory();
+        sshd.setSubsystemFactories(Collections.singletonList(factory));
+
+        Path rootDir = Paths.get(SFTP_ROOT_DIR);
+        if (!Files.exists(rootDir)) {
+            Files.createDirectories(rootDir);
+        }
+        factory.setHomeDir(rootDir);
+    }
+
+    private class CustomPublicKeyAuthenticator implements PublickeyAuthenticator {
+        @Override
+        public boolean authenticate(String username, PublicKey key, ServerSession session) {
+            try {
+                Path authorizedKeysFile = Paths.get(AUTHORIZED_KEYS_FILE);
+                if (!Files.exists(authorizedKeysFile)) {
+                    logger.warn("Authorized keys file not found: {}", authorizedKeysFile);
+                    return false;
+                }
+
+                String incomingKey = Base64.getEncoder().encodeToString(key.getEncoded());
+                return Files.lines(authorizedKeysFile)
+                        .anyMatch(line -> line.trim().endsWith(incomingKey));
+            } catch (IOException e) {
+                logger.error("Error reading authorized keys file", e);
+                return false;
+            }
+        }
+    }
+}

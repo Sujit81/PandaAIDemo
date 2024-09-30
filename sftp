@@ -1,0 +1,93 @@
+import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.auth.pubkey.PublickeyAuthenticator;
+import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
+import org.apache.sshd.server.subsystem.sftp.SftpSubsystemFactory;
+import org.apache.sshd.server.session.ServerSession;
+import org.apache.sshd.common.util.io.IoUtils;
+import org.apache.sshd.common.config.keys.KeyUtils;
+import org.apache.sshd.common.config.keys.PublicKeyEntry;
+import org.apache.sshd.common.util.security.SecurityUtils;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.nio.file.Paths;
+import java.security.PublicKey;
+import java.util.Collections;
+import java.util.List;
+
+public class SftpServerWithPublicKeyAuth {
+
+    public static void main(String[] args) throws Exception {
+        SshServer sshServer = SshServer.setUpDefaultServer();
+        sshServer.setPort(2222);
+        
+        // Host key provider - server's private key for SSH handshake
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(Paths.get("hostkey.ser")));
+
+        // Public key authentication
+        sshServer.setPublickeyAuthenticator(new PublickeyAuthenticator() {
+            @Override
+            public boolean authenticate(String username, PublicKey key, ServerSession session) {
+                try {
+                    // Path to the authorized public keys file (similar to ~/.ssh/authorized_keys)
+                    File authorizedKeysFile = new File("authorized_keys");
+                    
+                    // Check if the provided key is authorized
+                    return isPublicKeyAuthorized(key, authorizedKeysFile);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    return false;
+                }
+            }
+        });
+
+        // SFTP subsystem
+        sshServer.setSubsystemFactories(Collections.singletonList(new SftpSubsystemFactory()));
+
+        // Start the server
+        sshServer.start();
+        System.out.println("SFTP server started on port 2222");
+
+        // Keep the server running
+        Thread.sleep(Long.MAX_VALUE);
+    }
+
+    /**
+     * Helper method to compare the client's public key with the authorized keys
+     */
+    private static boolean isPublicKeyAuthorized(PublicKey clientKey, File authorizedKeysFile) throws Exception {
+        try (BufferedReader br = new BufferedReader(new FileReader(authorizedKeysFile))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                // Parse the authorized key line
+                PublicKey authorizedKey = parseAuthorizedKey(line);
+                
+                // Compare the client key with the authorized key
+                if (authorizedKey != null && KeyUtils.compareKeys(clientKey, authorizedKey)) {
+                    return true; // The key is authorized
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Parses an individual line from the authorized_keys file into a PublicKey object.
+     */
+    private static PublicKey parseAuthorizedKey(String line) throws Exception {
+        if (line.trim().isEmpty() || line.startsWith("#")) {
+            return null; // Skip empty or comment lines
+        }
+
+        // Parse the public key entry using PublicKeyEntry
+        List<PublicKeyEntry> entries = PublicKeyEntry.parsePublicKeyEntries(line);
+        if (entries.isEmpty()) {
+            return null;
+        }
+
+        // Decode the first entry into a PublicKey
+        PublicKeyEntry entry = entries.get(0);
+        return entry.resolvePublicKey(null, SecurityUtils.getSecurityProvider());
+    }
+}

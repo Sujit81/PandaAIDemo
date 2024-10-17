@@ -1,47 +1,30 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-    
-    <!-- Define Console Appender -->
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
-    <!-- Define File Appender (Rolling based on size) -->
-    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <!-- File name and location -->
-        <file>logs/app.log</file>
-        
-        <!-- Rolling policy: Rotate logs after they reach 10MB -->
-        <rollingPolicy class="ch.qos.logback.core.rolling.SizeBasedRollingPolicy">
-            <fileNamePattern>logs/app.%i.log</fileNamePattern>
-            <maxFileSize>10MB</maxFileSize>
-            <maxHistory>5</maxHistory> <!-- Keep 5 archived logs -->
-        </rollingPolicy>
+@Aspect
+@Component
+public class ExecutionTimeAspect {
 
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
+    private static final Logger logger = LoggerFactory.getLogger(ExecutionTimeAspect.class);
 
-    <!-- Root logger configuration -->
-    <root level="INFO">
-        <!-- Log INFO, DEBUG, and ERROR to both console and file -->
-        <appender-ref ref="CONSOLE" />
-        <appender-ref ref="FILE" />
-    </root>
+    @Around("execution(* com.example.demo..*(..)))")  // Pointcut: Apply to all methods in the specified package
+    public Object logExecutionTime(ProceedingJoinPoint joinPoint) throws Throwable {
+        long startTime = System.nanoTime();
 
-    <!-- Logger for DEBUG level (customize specific packages) -->
-    <logger name="com.example" level="DEBUG" additivity="false">
-        <appender-ref ref="CONSOLE" />
-        <appender-ref ref="FILE" />
-    </logger>
+        Object proceed = joinPoint.proceed();  // Proceed with the method execution
 
-    <!-- Logger for ERROR level -->
-    <logger name="com.example.error" level="ERROR" additivity="false">
-        <appender-ref ref="CONSOLE" />
-        <appender-ref ref="FILE" />
-    </logger>
+        long endTime = System.nanoTime();
+        long duration = (endTime - startTime);
 
-</configuration>
+        logger.info("Execution time of {}.{}: {} ns", 
+                    joinPoint.getSignature().getDeclaringTypeName(),
+                    joinPoint.getSignature().getName(),
+                    duration);
+
+        return proceed;  // Return the result to the caller
+    }
+}

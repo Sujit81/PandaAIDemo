@@ -1,0 +1,58 @@
+import java.io.*;
+import java.nio.file.*;
+import java.util.zip.*;
+
+public class FileZipAndMove {
+
+    public static void main(String[] args) {
+        try {
+            String folderName = "myFolder";
+            String zipFileName = "myFolder.zip";
+            String remoteLocation = "/path/to/remote/location/";
+
+            // Create a folder
+            Path folderPath = Paths.get(folderName);
+            if (!Files.exists(folderPath)) {
+                Files.createDirectory(folderPath);
+            }
+
+            // Copy files into the folder
+            Files.copy(Paths.get("file1.txt"), folderPath.resolve("file1.txt"), StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(Paths.get("file2.txt"), folderPath.resolve("file2.txt"), StandardCopyOption.REPLACE_EXISTING);
+
+            // Zip the folder
+            zipFolder(folderPath.toString(), zipFileName);
+
+            // Move the zipped file to the remote location
+            Path zipFilePath = Paths.get(zipFileName);
+            Path remotePath = Paths.get(remoteLocation, zipFileName);
+            Files.move(zipFilePath, remotePath, StandardCopyOption.REPLACE_EXISTING);
+
+            System.out.println("Files zipped and moved successfully.");
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void zipFolder(String sourceDir, String zipFileName) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(zipFileName);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+
+            Path sourcePath = Paths.get(sourceDir);
+
+            Files.walk(sourcePath)
+                .filter(path -> !Files.isDirectory(path))
+                .forEach(path -> {
+                    ZipEntry zipEntry = new ZipEntry(sourcePath.relativize(path).toString());
+                    try {
+                        zos.putNextEntry(zipEntry);
+                        Files.copy(path, zos);
+                        zos.closeEntry();
+                    } catch (IOException e) {
+                        System.err.println("Failed to zip file: " + path + " due to " + e);
+                    }
+                });
+        }
+    }
+}

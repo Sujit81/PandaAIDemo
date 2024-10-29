@@ -1,0 +1,61 @@
+
+import javax.validation.Constraint;
+import javax.validation.Payload;
+import java.lang.annotation.*;
+
+@Documented
+@Constraint(validatedBy = CustomValidator.class)
+@Target({ElementType.FIELD})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface CustomConstraint {
+    String message() default "Invalid field value";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+
+
+
+import javax.validation.ConstraintValidator;
+import javax.validation.ConstraintValidatorContext;
+
+public class CustomValidator implements ConstraintValidator<CustomConstraint, String> {
+
+    @Override
+    public void initialize(CustomConstraint constraintAnnotation) {
+        // Initialization code, if necessary
+    }
+
+    @Override
+    public boolean isValid(String value, ConstraintValidatorContext context) {
+        // Allow null values (optional field)
+        if (value == null) {
+            return true;
+        }
+        // Apply validation logic here (e.g., check if value matches a pattern)
+        return value.matches("^[A-Za-z0-9]+$"); // Example pattern
+    }
+}
+
+
+
+public class RequestDTO {
+
+    @CustomConstraint(message = "Field must contain only alphanumeric characters")
+    private String optionalField;
+
+    // Getters and setters
+}
+
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class MyController {
+
+    @PostMapping("/submit")
+    public ResponseEntity<String> submitData(@Valid @RequestBody RequestDTO requestDTO) {
+        // Processing logic
+        return ResponseEntity.ok("Data submitted successfully!");
+    }
+}

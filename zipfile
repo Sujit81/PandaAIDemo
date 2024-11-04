@@ -1,17 +1,32 @@
  public static void zipFolder(String folderPath, String zipFilePath) throws IOException {
         Path sourceDir = Paths.get(folderPath);
-        try (ZipOutputStream zipOutputStream = new ZipOutputStream(new FileOutputStream(zipFilePath))) {
-            Files.walk(sourceDir)
-                .filter(path -> !Files.isDirectory(path))
-                .forEach(path -> {
-                    ZipEntry zipEntry = new ZipEntry(sourceDir.relativize(path).toString());
-                    try {
+        ZipOutputStream zipOutputStream = new ZipOutputStream(new FileOutputStream(zipFilePath));
+
+        try {
+            // Walk through all files and directories in the folder
+            Files.walk(sourceDir).forEach(path -> {
+                try {
+                    // Only process files, skip directories
+                    if (!Files.isDirectory(path)) {
+                        // Create a ZipEntry with the relative path of the file
+                        String relativePath = sourceDir.relativize(path).toString();
+                        ZipEntry zipEntry = new ZipEntry(relativePath);
+                        
+                        // Add the zip entry to the zip output stream
                         zipOutputStream.putNextEntry(zipEntry);
+                        
+                        // Copy the file content to the zip output stream
                         Files.copy(path, zipOutputStream);
+                        
+                        // Close the current zip entry
                         zipOutputStream.closeEntry();
-                    } catch (IOException e) {
-                        System.err.println("Error zipping file: " + path + " - " + e.getMessage());
                     }
-                });
+                } catch (IOException e) {
+                    System.err.println("Error zipping file: " + path + " - " + e.getMessage());
+                }
+            });
+        } finally {
+            // Ensure the zip output stream is closed
+            zipOutputStream.close();
         }
     }

@@ -29,8 +29,9 @@ public class CustomFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         if ("POST".equalsIgnoreCase(request.getMethod())) {
+            HttpServletRequest wrappedRequest = new CachedBodyHttpServletRequest(request);
             // Read the request body and convert it to a requestDTO object
-            RequestDTO requestDTO = parseRequestDTO(request);
+            RequestDTO requestDTO = parseRequestDTO(wrappedRequest);
             
             if (requestDTO != null) {
                 // Process requestDTO as needed

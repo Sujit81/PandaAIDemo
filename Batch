@@ -1,0 +1,11 @@
+# Enable batch processing
+spring.jpa.properties.hibernate.jdbc.batch_size=50
+
+# Optional: Order insert statements
+spring.jpa.properties.hibernate.order_inserts=true
+
+# Optional: Order update statements
+spring.jpa.properties.hibernate.order_updates=true
+
+# Optional: Optimize ID generation (if using IDENTITY)
+spring.jpa.properties.hibernate.jdbc.batch_versioned_data=true

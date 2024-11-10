@@ -1,0 +1,50 @@
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import javax.servlet.FilterChain;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletRequestWrapper;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+
+@Component
+public class CustomFilter extends OncePerRequestFilter {
+
+    private final ObjectMapper objectMapper;
+
+    public CustomFilter(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+
+        if ("POST".equalsIgnoreCase(request.getMethod())) {
+            // Read the request body and convert it to a requestDTO object
+            RequestDTO requestDTO = parseRequestDTO(request);
+            
+            if (requestDTO != null) {
+                // Process requestDTO as needed
+                System.out.println("Received requestDTO: " + requestDTO);
+            }
+        }
+
+        filterChain.doFilter(request, response);
+    }
+
+    private RequestDTO parseRequestDTO(HttpServletRequest request) throws IOException {
+        // Convert request body JSON to RequestDTO object
+        try (InputStream inputStream = request.getInputStream()) {
+            return objectMapper.readValue(inputStream, RequestDTO.class);
+        }
+    }
+}

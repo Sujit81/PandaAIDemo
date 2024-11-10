@@ -105,3 +105,46 @@ public class CachedBodyHttpServletRequest extends HttpServletRequestWrapper {
     }
 }
 
+
+
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.ContentCachingRequestWrapper;
+
+import javax.servlet.FilterChain;
+import javax.servlet.ServletException;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+
+@Component
+public class CustomFilter extends OncePerRequestFilter {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+
+        // Wrap request with ContentCachingRequestWrapper to cache the body
+        ContentCachingRequestWrapper wrappedRequest = new ContentCachingRequestWrapper(request);
+
+        filterChain.doFilter(wrappedRequest, response);
+
+        // After filter chain, access the cached request body
+        if ("POST".equalsIgnoreCase(request.getMethod())) {
+            RequestDTO requestDTO = parseRequestDTO(wrappedRequest);
+
+            if (requestDTO != null) {
+                System.out.println("Received requestDTO: " + requestDTO);
+            }
+        }
+    }
+
+    private RequestDTO parseRequestDTO(ContentCachingRequestWrapper request) throws IOException {
+        byte[] body = request.getContentAsByteArray();
+        return objectMapper.readValue(body, RequestDTO.class);
+    }
+}

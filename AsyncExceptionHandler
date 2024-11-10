@@ -1,0 +1,37 @@
+import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
+import org.springframework.stereotype.Component;
+
+import java.lang.reflect.Method;
+
+@Component
+public class CustomAsyncExceptionHandler implements AsyncUncaughtExceptionHandler {
+
+    @Override
+    public void handleUncaughtException(Throwable throwable, Method method, Object... obj) {
+        System.err.println("Exception in async method: " + throwable.getMessage());
+        System.err.println("Method: " + method.getName());
+        // You can add more logging or notify an external system here
+    }
+}
+
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
+import org.springframework.scheduling.annotation.AsyncConfigurer;
+import org.springframework.scheduling.annotation.EnableAsync;
+
+@Configuration
+@EnableAsync
+public class AsyncConfig implements AsyncConfigurer {
+
+    private final CustomAsyncExceptionHandler asyncExceptionHandler;
+
+    public AsyncConfig(CustomAsyncExceptionHandler asyncExceptionHandler) {
+        this.asyncExceptionHandler = asyncExceptionHandler;
+    }
+
+    @Override
+    public AsyncUncaughtExceptionHandler getAsyncUncaughtExceptionHandler() {
+        return asyncExceptionHandler;
+    }
+}

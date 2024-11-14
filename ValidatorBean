@@ -62,3 +62,33 @@ public class StudentService {
         // entityManager.persist(student); // Your persistence logic here
     }
 }
+
+
+
+----
+
+@Configuration
+public class ValidationConfig {
+    
+    @Bean
+    public Validator validator() {
+        // Create a new validator factory using Jakarta EE validation
+        return Validation.byDefaultProvider()
+            .configure()
+            .buildValidatorFactory()
+            .getValidator();
+    }
+
+    @Bean
+    public LocalValidatorFactoryBean localValidatorFactoryBean() {
+        LocalValidatorFactoryBean bean = new LocalValidatorFactoryBean();
+        return bean;
+    }
+
+    @Bean
+    public MethodValidationPostProcessor methodValidationPostProcessor(Validator validator) {
+        MethodValidationPostProcessor processor = new MethodValidationPostProcessor();
+        processor.setValidator(validator);
+        return processor;
+    }
+}

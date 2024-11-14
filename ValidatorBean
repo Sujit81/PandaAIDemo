@@ -72,23 +72,40 @@ public class ValidationConfig {
     
     @Bean
     public Validator validator() {
-        // Create a new validator factory using Jakarta EE validation
-        return Validation.byDefaultProvider()
-            .configure()
-            .buildValidatorFactory()
-            .getValidator();
+        ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
+        return factory.getValidator();
     }
 
     @Bean
     public LocalValidatorFactoryBean localValidatorFactoryBean() {
-        LocalValidatorFactoryBean bean = new LocalValidatorFactoryBean();
-        return bean;
+        return new LocalValidatorFactoryBean();
     }
 
-    @Bean
-    public MethodValidationPostProcessor methodValidationPostProcessor(Validator validator) {
-        MethodValidationPostProcessor processor = new MethodValidationPostProcessor();
-        processor.setValidator(validator);
-        return processor;
+    @Bean 
+    public MethodValidationPostProcessor methodValidationPostProcessor() {
+        return new MethodValidationPostProcessor();
+    }
+}
+
+
+@Service
+@Validated
+public class StudentService {
+    private final Validator validator;
+    private final EntityManager entityManager;
+
+    @Autowired
+    public StudentService(Validator validator, EntityManager entityManager) {
+        this.validator = validator;
+        this.entityManager = entityManager;
+    }
+
+    @Transactional
+    public void saveStudent(@Valid Student student) {
+        Set<ConstraintViolation<Student>> violations = validator.validate(student);
+        if (!violations.isEmpty()) {
+            throw new ConstraintViolationException(violations);
+        }
+        entityManager.persist(student);
     }
 }

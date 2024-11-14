@@ -1,0 +1,58 @@
+
+import javax.validation.constraints.NotBlank;
+
+public class User {
+    @NotBlank(message = "Username cannot be blank")
+    private String username;
+
+    // Getters and Setters
+}
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+
+import javax.validation.Validator;
+
+@Configuration
+public class ValidatorConfig {
+
+    @Bean
+    public Validator validator() {
+        return new LocalValidatorFactoryBean();
+    }
+}
+
+
+
+import org.springframework.stereotype.Service;
+import javax.validation.ConstraintViolation;
+import javax.validation.Validator;
+import java.util.Set;
+
+@Service
+public class StudentService {
+
+    private final Validator validator;
+
+    // Injecting the Validator bean
+    public StudentService(Validator validator) {
+        this.validator = validator;
+    }
+
+    public void createStudent(Student student) {
+        // Validate the student object
+        Set<ConstraintViolation<Student>> violations = validator.validate(student);
+
+        if (!violations.isEmpty()) {
+            StringBuilder errors = new StringBuilder("Validation failed: ");
+            for (ConstraintViolation<Student> violation : violations) {
+                errors.append(violation.getPropertyPath()).append(" ").append(violation.getMessage()).append("; ");
+            }
+            throw new IllegalArgumentException(errors.toString());
+        }
+
+        // Proceed with saving the student if validation passes
+        // entityManager.persist(student); // Your persistence logic here
+    }
+}

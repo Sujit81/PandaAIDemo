@@ -116,3 +116,39 @@ public class StudentService {
         <artifactId>hibernate-validator</artifactId>
         <version>8.0.1.Final</version>
     </dependency>
+
+
+import org.hibernate.validator.HibernateValidator;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+
+@Configuration
+public class ValidationConfig {
+
+    @Bean
+    public ValidatorFactory validatorFactory() {
+        return Validation.byProvider(HibernateValidator.class)
+            .configure()
+            .buildValidatorFactory();
+    }
+
+    @Bean
+    public Validator validator(ValidatorFactory validatorFactory) {
+        return validatorFactory.getValidator();
+    }
+
+    @Bean
+    public LocalValidatorFactoryBean localValidatorFactoryBean() {
+        LocalValidatorFactoryBean bean = new LocalValidatorFactoryBean();
+        bean.setProviderClass(HibernateValidator.class);
+        return bean;
+    }
+
+    @Bean
+    public MethodValidationPostProcessor methodValidationPostProcessor(Validator validator) {
+        MethodValidationPostProcessor processor = new MethodValidationPostProcessor();
+        processor.setValidator(validator);
+        return processor;
+    }
+}

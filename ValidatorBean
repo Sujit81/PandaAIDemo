@@ -1,5 +1,9 @@
 spring.jpa.properties.javax.persistence.validation.mode=auto
 
+# Enable debug logging for validation
+logging.level.org.springframework.validation=DEBUG
+logging.level.org.hibernate.validator=DEBUG
+logging.level.your.package.name=DEBUG
 
 import javax.validation.constraints.NotBlank;
 

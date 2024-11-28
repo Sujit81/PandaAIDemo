@@ -1,0 +1,10 @@
+try (MockedConstruction<FileReader> fileReaderMock = mockConstruction(FileReader.class);
+             MockedConstruction<BufferedReader> bufferedReaderMock = mockConstruction(
+                 BufferedReader.class,
+                 (mock, context) -> {
+                     when(mock.readLine()).thenReturn(expectedContent);
+                 }
+             )) {
+            
+            FileProcessor processor = new FileProcessor();
+            String result = processor.readFirstLine(testPath);

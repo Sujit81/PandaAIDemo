@@ -47,6 +47,17 @@ spec:
 0---
 
 
+# dev9.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: folder-config
+data:
+  FOLDER1: "data1"
+  FOLDER2: "logs"
+  FOLDER3: "config"
+---
+# deployment.yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -72,7 +83,6 @@ spec:
       labels:
         app: my-app
     spec:
-      # Init container to create the folder
       initContainers:
         - name: create-folders
           image: busybox
@@ -80,7 +90,7 @@ spec:
             - sh
             - -c
             - |
-              for dir in "folder1" "folder2" "folder3"; do
+              for dir in "${FOLDER1}" "${FOLDER2}" "${FOLDER3}"; do
                 if [ ! -d "/data/$dir" ]; then
                   echo "Creating $dir"
                   mkdir -p "/data/$dir"
@@ -88,13 +98,15 @@ spec:
                   echo "Folder $dir already exists"
                 fi
               done
+          envFrom:
+            - configMapRef:
+                name: folder-config
           volumeMounts:
             - name: my-data
               mountPath: /data
-      # Main application container
       containers:
         - name: main-app
-          image: nginx  # Replace with your application image
+          image: nginx
           volumeMounts:
             - name: my-data
               mountPath: /data

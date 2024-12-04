@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      # Init container to create the folder
+      initContainers:
+        - name: init-folder
+          image: busybox
+          command: ['sh', '-c', '[ ! -d "/data/my-folder" ] && mkdir -p /data/my-folder || echo "Folder already exists"']
+          volumeMounts:
+            - name: my-data
+              mountPath: /data
+      # Main application container
+      containers:
+        - name: main-app
+          image: nginx  # Replace with your application image
+          volumeMounts:
+            - name: my-data
+              mountPath: /data
+      volumes:
+        - name: my-data
+          persistentVolumeClaim:
+            claimName: my-data-pvc

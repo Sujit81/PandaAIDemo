@@ -1,0 +1,151 @@
+// pom.xml dependencies
+<dependencies>
+    <dependency>
+        <groupId>org.apache.sshd</groupId>
+        <artifactId>sshd-sftp</artifactId>
+        <version>2.11.0</version>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.sshd</groupId>
+        <artifactId>sshd-common</artifactId>
+        <version>2.11.0</version>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+
+// SftpServerConfiguration.java
+@TestConfiguration
+public class SftpServerConfiguration {
+    private static final int SFTP_PORT = 2222;
+    private static final String TEST_USERNAME = "test-user";
+    
+    @Bean(destroyMethod = "stop")
+    public SshServer sshServer() throws IOException {
+        SshServer sshServer = SshServer.setUpDefaultServer();
+        sshServer.setPort(SFTP_PORT);
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider());
+        sshServer.setPublickeyAuthenticator(this::authenticatePublicKey);
+        sshServer.setSubsystemFactories(Collections.singletonList(
+            new SftpSubsystemFactory.Builder().build()));
+        
+        // Setup user authentication
+        sshServer.setPasswordAuthenticator((username, password, session) -> 
+            TEST_USERNAME.equals(username));
+        
+        // Setup SFTP root directory
+        Path sftpRoot = Files.createTempDirectory("sftp-test");
+        sftpRoot.toFile().deleteOnExit();
+        
+        sshServer.setFileSystemFactory(new VirtualFileSystemFactory(sftpRoot));
+        
+        // Start the server
+        sshServer.start();
+        return sshServer;
+    }
+    
+    private boolean authenticatePublicKey(String username, PublicKey key, ServerSession session) {
+        if (!TEST_USERNAME.equals(username)) {
+            return false;
+        }
+        
+        try {
+            // Load the authorized public key from resources
+            Path publicKeyPath = Paths.get(getClass().getResource("/test-keys/id_rsa.pub").toURI());
+            String authorizedKey = Files.readString(publicKeyPath);
+            PublicKey authorizedPublicKey = PublicKeyEntry.parsePublicKeyEntry(authorizedKey).resolvePublicKey();
+            return key.equals(authorizedPublicKey);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+}
+
+// SftpService.java
+@Service
+@ConfigurationProperties(prefix = "sftp")
+public class SftpService {
+    private String host;
+    private int port;
+    private String username;
+    private String privateKeyPath;
+    
+    public void downloadFile(String remoteFile, Path localPath) throws IOException {
+        JSch jsch = new JSch();
+        Session session = null;
+        ChannelSftp channelSftp = null;
+        
+        try {
+            // Add private key
+            jsch.addIdentity(privateKeyPath);
+            
+            session = jsch.getSession(username, host, port);
+            session.setConfig("StrictHostKeyChecking", "no");
+            session.connect();
+            
+            channelSftp = (ChannelSftp) session.openChannel("sftp");
+            channelSftp.connect();
+            
+            channelSftp.get(remoteFile, localPath.toString());
+        } finally {
+            if (channelSftp != null) channelSftp.disconnect();
+            if (session != null) session.disconnect();
+        }
+    }
+}
+
+// SftpServiceIntegrationTest.java
+@SpringBootTest
+@Import(SftpServerConfiguration.class)
+class SftpServiceIntegrationTest {
+    
+    @Autowired
+    private SftpService sftpService;
+    
+    @Autowired
+    private SshServer sshServer;
+    
+    private Path testDirectory;
+    
+    @BeforeEach
+    void setUp() throws IOException {
+        // Create test directory
+        testDirectory = Files.createTempDirectory("sftp-test-files");
+        
+        // Create test file in SFTP server directory
+        Path sftpRoot = sshServer.getFileSystemFactory()
+            .createFileSystem(null)
+            .getRoot();
+        Files.write(sftpRoot.resolve("test-file.txt"), 
+            "Test content".getBytes());
+    }
+    
+    @Test
+    void whenDownloadFile_thenFileExistsLocally() throws IOException {
+        // Given
+        Path localFile = testDirectory.resolve("downloaded-file.txt");
+        
+        // When
+        sftpService.downloadFile("/test-file.txt", localFile);
+        
+        // Then
+        assertTrue(Files.exists(localFile));
+        assertEquals("Test content", Files.readString(localFile));
+    }
+    
+    @AfterEach
+    void tearDown() throws IOException {
+        // Cleanup test directories
+        FileSystemUtils.deleteRecursively(testDirectory);
+    }
+}
+
+// application-test.properties
+sftp.host=localhost
+sftp.port=2222
+sftp.username=test-user
+sftp.private-key-path=classpath:test-keys/id_rsa
+
+// Generate test keys using command line:
+// ssh-keygen -t rsa -b 2048 -f id_rsa -N ""
+// Then place id_rsa and id_rsa.pub in src/test/resources/test-keys/

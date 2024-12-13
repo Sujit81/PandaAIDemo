@@ -1,0 +1,181 @@
+// pom.xml dependency
+<dependency>
+    <groupId>org.apache.sshd</groupId>
+    <artifactId>sshd-sftp</artifactId>
+    <version>2.11.0</version>
+    <scope>test</scope>
+</dependency>
+
+// EmbeddedSftpServer.java
+@TestComponent
+public class EmbeddedSftpServer {
+    private SshServer sshServer;
+    private Path serverRoot;
+    private int port;
+
+    public void start() throws IOException {
+        serverRoot = Files.createTempDirectory("sftp-test");
+        port = findFreePort();
+        
+        sshServer = SshServer.setUpDefaultServer();
+        sshServer.setPort(port);
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider());
+        sshServer.setPasswordAuthenticator((username, password, session) -> 
+            "test-user".equals(username) && "test-pass".equals(password));
+        
+        sshServer.setSubsystemFactories(Collections.singletonList(
+            new SftpSubsystemFactory()));
+        
+        sshServer.setFileSystemFactory(new VirtualFileSystemFactory(serverRoot));
+        
+        sshServer.start();
+    }
+
+    public void stop() throws IOException {
+        if (sshServer != null) {
+            sshServer.stop(true);
+        }
+        FileSystemUtils.deleteRecursively(serverRoot);
+    }
+
+    public void createDirectory(String path) throws IOException {
+        Files.createDirectories(serverRoot.resolve(path));
+    }
+
+    public void createFile(String path, byte[] contents) throws IOException {
+        Path filePath = serverRoot.resolve(path);
+        Files.write(filePath, contents);
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    private int findFreePort() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+}
+
+// TestSftpConfig.java
+@TestConfiguration
+public class TestSftpConfig {
+    
+    @Bean
+    public SftpProperties sftpProperties(EmbeddedSftpServer server) {
+        SftpProperties properties = new SftpProperties();
+        properties.setHost("localhost");
+        properties.setPort(server.getPort());
+        properties.setUsername("test-user");
+        properties.setPassword("test-pass");
+        return properties;
+    }
+}
+
+// SftpServiceIntegrationTest.java
+@SpringBootTest
+@Import({TestSftpConfig.class, EmbeddedSftpServer.class})
+class SftpServiceIntegrationTest {
+
+    @Autowired
+    private SftpService sftpService;
+
+    @Autowired
+    private EmbeddedSftpServer sftpServer;
+
+    @BeforeEach
+    void setUp() throws IOException {
+        sftpServer.start();
+        
+        // Setup test files
+        sftpServer.createDirectory("/upload");
+        sftpServer.createFile("/upload/test.txt", "Hello, SFTP!".getBytes());
+    }
+
+    @AfterEach
+    void tearDown() throws IOException {
+        sftpServer.stop();
+    }
+
+    @Test
+    void whenDownloadFile_thenContentShouldMatch() throws IOException {
+        // Given
+        String remotePath = "/upload/test.txt";
+        
+        // When
+        byte[] downloadedContent = sftpService.downloadFile(remotePath);
+        
+        // Then
+        assertThat(new String(downloadedContent)).isEqualTo("Hello, SFTP!");
+    }
+
+    @Test
+    void whenListFiles_thenShouldReturnAllFiles() throws IOException {
+        // Given
+        sftpServer.createFile("/upload/file1.txt", "content1".getBytes());
+        sftpServer.createFile("/upload/file2.txt", "content2".getBytes());
+        
+        // When
+        List<String> files = sftpService.listFiles("/upload");
+        
+        // Then
+        assertThat(files)
+            .hasSize(3)
+            .contains("test.txt", "file1.txt", "file2.txt");
+    }
+}
+
+// Example SftpService implementation
+@Service
+@RequiredArgsConstructor
+public class SftpService {
+    private final SftpProperties sftpProperties;
+    
+    public byte[] downloadFile(String remotePath) throws IOException {
+        JSch jsch = new JSch();
+        Session session = null;
+        ChannelSftp channel = null;
+        
+        try {
+            session = jsch.getSession(
+                sftpProperties.getUsername(),
+                sftpProperties.getHost(),
+                sftpProperties.getPort()
+            );
+            session.setPassword(sftpProperties.getPassword());
+            session.setConfig("StrictHostKeyChecking", "no");
+            session.connect();
+            
+            channel = (ChannelSftp) session.openChannel("sftp");
+            channel.connect();
+            
+            try (InputStream is = channel.get(remotePath)) {
+                return is.readAllBytes();
+            }
+        } finally {
+            if (channel != null) {
+                channel.disconnect();
+            }
+            if (session != null) {
+                session.disconnect();
+            }
+        }
+    }
+    
+    public List<String> listFiles(String remotePath) throws IOException {
+        // Similar implementation with JSch for listing files
+        // Returns list of filenames in the specified directory
+    }
+}
+
+// SftpProperties.java
+@ConfigurationProperties(prefix = "sftp")
+@Component
+@Data
+public class SftpProperties {
+    private String host;
+    private int port;
+    private String username;
+    private String password;
+}

@@ -202,3 +202,22 @@ public class SftpProperties {
     private String username;
     private String password;
 }
+
+
+
+
+@Configuration
+@EnableAsync
+public class AsyncTestConfig {
+
+    @Bean(name = "taskExecutor")
+    public Executor taskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("AsyncTest-");
+        executor.initialize();
+        return executor;
+    }
+}

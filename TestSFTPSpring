@@ -56,6 +56,29 @@ public class EmbeddedSftpServer {
             return socket.getLocalPort();
         }
     }
+
+ public void uploadFile(String resourcePath, String remoteFilePath) throws IOException {
+        try {
+            // Load file from test resources
+            ClassPathResource resource = new ClassPathResource("/" + resourcePath);
+            Path destinationFile = serverRoot.resolve(remoteFilePath);
+            
+            // Create parent directories if they don't exist
+            Files.createDirectories(destinationFile.getParent());
+            
+            // Copy the file from resources to SFTP server
+            try (InputStream inputStream = resource.getInputStream()) {
+                Files.copy(
+                    inputStream, 
+                    destinationFile, 
+                    StandardCopyOption.REPLACE_EXISTING
+                );
+            }
+        } catch (IOException e) {
+            throw new IOException("Failed to upload file from resources: " + resourcePath, e);
+        }
+    }
+
 }
 
 // TestSftpConfig.java

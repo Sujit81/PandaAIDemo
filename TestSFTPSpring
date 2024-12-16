@@ -221,3 +221,20 @@ public class AsyncTestConfig {
         return executor;
     }
 }
+
+
+
+
+
+
+try (MockedConstruction<MyObject> mocked = mockConstruction(MyObject.class, (mock, context) -> {
+            // Bypass the method call
+            doNothing().when(mock).doSomething();
+        })) {
+            // Call the utility method
+            MyUtilityClass.someUtilityMethod();
+
+            // Verify the behavior if needed
+            MyObject mockedInstance = mocked.constructed().get(0);
+            verify(mockedInstance, times(1)).doSomething();
+        }

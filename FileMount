@@ -1,8 +1,11 @@
 #!/bin/bash
 
+# Directory path - Change this to your target directory
+DIR_PATH="/path/to/your/directory"
+
 # Function to check if directory exists
 check_directory() {
-    local dir_path=$1
+    local dir_path=$DIR_PATH
     if [ ! -d "$dir_path" ]; then
         echo "Error: Directory '$dir_path' does not exist"
         exit 1
@@ -11,9 +14,10 @@ check_directory() {
 
 # Function to validate files and folders
 validate_items() {
-    local dir_path=$1
+    local dir_path=$DIR_PATH
     local total_items=0
     local error_count=0
+    local success_count=0
 
     echo "Starting validation of directory: $dir_path"
     echo "----------------------------------------"
@@ -21,6 +25,7 @@ validate_items() {
     # Loop through all items in directory
     for item in "$dir_path"/*; do
         ((total_items++))
+        local item_status=0
         echo "Checking: $item"
         
         # Check if item exists
@@ -30,10 +35,11 @@ validate_items() {
             continue
         fi
 
-        # Check permissions
+        # Check read permissions
         if [ ! -r "$item" ]; then
             echo "ERROR: $item is not readable"
             ((error_count++))
+            item_status=1
         fi
 
         # Directory specific checks
@@ -41,21 +47,38 @@ validate_items() {
             if [ ! -x "$item" ]; then
                 echo "ERROR: Directory $item is not traversable"
                 ((error_count++))
+                item_status=1
+            fi
+            if [ ! -w "$item" ]; then
+                echo "WARNING: Directory $item is not writable"
             fi
         fi
 
         # File specific checks
         if [ -f "$item" ]; then
+            # Check if file is empty
             if [ ! -s "$item" ]; then
                 echo "WARNING: $item is empty"
             fi
+            
+            # Get file size
+            size=$(du -k "$item" | cut -f1)
+            if [ $size -gt 102400 ]; then # 100MB = 102400KB
+                echo "WARNING: $item is larger than 100MB"
+            fi
+        fi
+
+        # Count successful validations
+        if [ $item_status -eq 0 ]; then
+            ((success_count++))
         fi
     done
 
-    # Print summary
+    # Print validation summary
     echo "----------------------------------------"
     echo "Validation Results:"
     echo "Total items checked: $total_items"
+    echo "Successfully validated: $success_count"
     echo "Items with errors: $error_count"
     
     return $error_count
@@ -63,28 +86,22 @@ validate_items() {
 
 # Main function
 main() {
-    if [ $# -eq 0 ]; then
-        echo "Usage: $0 <directory_path>"
-        exit 1
-    fi
-
-    local dir_path=$1
-    
     # Check if directory exists
-    check_directory "$dir_path"
+    check_directory
     
     # Validate items in directory
-    validate_items "$dir_path"
+    validate_items
     local status=$?
 
+    # Print final status
     if [ $status -eq 0 ]; then
-        echo "Status: PASSED"
+        echo "Final Status: PASSED"
         exit 0
     else
-        echo "Status: FAILED"
+        echo "Final Status: FAILED"
         exit 1
     fi
 }
 
-# Call main function with all arguments passed to script
-main "$@"
+# Execute main function
+main

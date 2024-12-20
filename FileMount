@@ -105,3 +105,17 @@ main() {
 
 # Execute main function
 main
+
+
+
+775 Permission:
+
+Owner: 7 (rwx) - Full permissions (read, write, execute)
+Group: 7 (rwx) - Full permissions (read, write, execute)
+Others: 5 (r-x) - Can read and execute, but cannot write
+
+777 Permission:
+
+Owner: 7 (rwx) - Full permissions (read, write, execute)
+Group: 7 (rwx) - Full permissions (read, write, execute)
+Others: 7 (rwx) - Full permissions (read, write, execute)

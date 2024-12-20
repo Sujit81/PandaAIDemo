@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# Function to validate file/folder
+validate_item() {
+    local item="$1"
+    local errors=0
+    
+    # Check if item exists
+    if [ ! -e "$item" ]; then
+        echo "ERROR: $item does not exist"
+        return 1
+    }
+
+    # Check read permissions
+    if [ ! -r "$item" ]; then
+        echo "ERROR: $item is not readable"
+        ((errors++))
+    }
+
+    # If it's a directory, check if it's traversable
+    if [ -d "$item" ]; then
+        if [ ! -x "$item" ]; then
+            echo "ERROR: Directory $item is not traversable"
+            ((errors++))
+        }
+        
+        # Check for write permissions
+        if [ ! -w "$item" ]; then
+            echo "WARNING: Directory $item is not writable"
+        }
+    }
+
+    # If it's a file, perform file-specific checks
+    if [ -f "$item" ]; then
+        # Check if file is empty
+        if [ ! -s "$item" ]; then
+            echo "WARNING: $item is empty"
+        }
+        
+        # Check file size (warn if > 100MB)
+        size=$(stat -f %z "$item" 2>/dev/null || stat -c %s "$item" 2>/dev/null)
+        if [ $? -eq 0 ] && [ $size -gt 104857600 ]; then
+            echo "WARNING: $item is larger than 100MB ($(($size/1048576))MB)"
+        }
+    }
+
+    return $errors
+}
+
+# Main script
+main() {
+    local dir="${1:-.}"  # Use current directory if none specified
+    local total_items=0
+    local error_count=0
+
+    # Check if directory exists
+    if [ ! -d "$dir" ]; then
+        echo "Error: Directory '$dir' does not exist"
+        exit 1
+    }
+
+    echo "Starting validation of directory: $dir"
+    echo "----------------------------------------"
+
+    # Find all files and directories
+    while IFS= read -r item; do
+        ((total_items++))
+        echo "Checking: $item"
+        validate_item "$item"
+        if [ $? -ne 0 ]; then
+            ((error_count++))
+        fi
+    done < <(find "$dir" -mindepth 1)
+
+    echo "----------------------------------------"
+    echo "Validation complete:"
+    echo "Total items checked: $total_items"
+    echo "Items with errors: $error_count"
+
+    if [ $error_count -gt 0 ]; then
+        echo "Status: FAILED"
+        exit 1
+    else
+        echo "Status: PASSED"
+        exit 0
+    fi
+}
+
+# Execute main function with provided argument
+main "$@"

@@ -1,0 +1,171 @@
+Here's a step-by-step implementation of a Spring Boot application to call the Oracle stored procedure sp_get_users using JPA:
+
+1. Entity Class
+java
+import jakarta.persistence.*;
+
+@Entity
+@NamedStoredProcedureQuery(
+    name = "User.getUsers",
+    procedureName = "sp_get_users",
+    parameters = {
+        @StoredProcedureParameter(name = "p_soeid", type = String.class, mode = ParameterMode.IN),
+        @StoredProcedureParameter(name = "p_geid", type = String.class, mode = ParameterMode.IN),
+        @StoredProcedureParameter(name = "p_cursor", type = Class.class, mode = ParameterMode.REF_CURSOR)
+    },
+    resultClasses = User.class
+)
+public class User {
+    @Id
+    private String userId;
+    private String name;
+    private String email;
+    private String managerId;
+    // Add other columns as needed
+    
+    // Getters and setters
+}
+2. Repository Implementation
+java
+import jakarta.persistence.*;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+
+@Repository
+public class UserRepository {
+
+    @PersistenceContext
+    private EntityManager em;
+
+    public List<User> getUsers(String soeid, String geid) {
+        StoredProcedureQuery query = em.createNamedStoredProcedureQuery("User.getUsers");
+        query.setParameter("p_soeid", soeid);
+        query.setParameter("p_geid", geid);
+        query.execute();
+        return query.getResultList();
+    }
+}
+3. Service Layer
+java
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+public class UserService {
+
+    private final UserRepository userRepository;
+
+    public UserService(UserRepository userRepository) {
+        this.userRepository = userRepository;
+    }
+
+    public List<User> getUsers(List<String> soeids, List<String> geids) {
+        validateInput(soeids, geids);
+        
+        String soeidParam = soeids != null ? String.join(",", soeids) : null;
+        String geidParam = geids != null ? String.join(",", geids) : null;
+        
+        return userRepository.getUsers(soeidParam, geidParam);
+    }
+
+    private void validateInput(List<String> soeids, List<String> geids) {
+        if ((soeids == null && geids == null) || (soeids != null && geids != null)) {
+            throw new IllegalArgumentException("Provide exactly one of 'soeid' or 'geid' parameters");
+        }
+    }
+}
+4. REST Controller
+java
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Arrays;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    private final UserService userService;
+
+    public UserController(UserService userService) {
+        this.userService = userService;
+    }
+
+    @GetMapping
+    public ResponseEntity<?> getUsers(
+        @RequestParam(name = "soeid", required = false) String soeids,
+        @RequestParam(name = "geid", required = false) String geids
+    ) {
+        try {
+            List<String> soeidList = parseParam(soeids);
+            List<String> geidList = parseParam(geids);
+            
+            return ResponseEntity.ok(userService.getUsers(soeidList, geidList));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    private List<String> parseParam(String param) {
+        return param != null ? Arrays.asList(param.split(",")) : null;
+    }
+}
+5. Application Configuration
+src/main/resources/application.properties:
+
+properties
+spring.datasource.url=jdbc:oracle:thin:@//[HOST]:[PORT]/[SERVICE_NAME]
+spring.datasource.username=[USERNAME]
+spring.datasource.password=[PASSWORD]
+spring.datasource.driver-class-name=oracle.jdbc.OracleDriver
+
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.OracleDialect
+spring.jpa.hibernate.ddl-auto=none
+6. Maven Dependencies
+pom.xml:
+
+xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.oracle.database.jdbc</groupId>
+        <artifactId>ojdbc11</artifactId>
+        <version>21.9.0.0</version>
+    </dependency>
+</dependencies>
+Key Points:
+Entity Mapping: The User entity maps to the stored procedure's result set
+
+Stored Procedure Call: Uses JPA's StoredProcedureQuery with REF_CURSOR
+
+Input Validation: Service ensures only one parameter type is provided
+
+Error Handling: Controller handles validation errors gracefully
+
+Oracle Configuration: Uses Oracle JDBC driver and correct dialect
+
+To use this:
+
+Call /api/users?soeid=id1,id2 or /api/users?geid=id3,id4
+
+The service will convert comma-separated values to appropriate format
+
+Results will be returned as JSON array of user objects
+
+Note: Ensure your Oracle stored procedure:
+
+Has exactly three parameters (two IN, one OUT REF CURSOR)
+
+Returns the result set through the OUT parameter
+
+Handles NULL values correctly for the input parameters

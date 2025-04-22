@@ -1,0 +1,253 @@
+Here's the updated, clean, and robust implementation according to your new request format:
+
+🎯 Updated Request Format:
+json
+Copy
+Edit
+{
+  "searchCriteria": "SOEID",   // or "GEID"
+  "searchValue": ["123", "6744", "5667"]
+}
+✅ Step-by-Step Implementation
+1. DTO Classes
+
+Request DTO (dto/UserRequest.java):
+
+java
+Copy
+Edit
+package com.example.demo.dto;
+
+import lombok.Data;
+import java.util.List;
+
+@Data
+public class UserRequest {
+    private String searchCriteria; // "SOEID" or "GEID"
+    private List<String> searchValue;
+}
+Response DTO (dto/UserResponse.java remains same):
+
+java
+Copy
+Edit
+package com.example.demo.dto;
+
+import com.example.demo.entity.User;
+import lombok.Data;
+import java.util.List;
+
+@Data
+public class UserResponse {
+    private String status;
+    private List<User> users;
+}
+2. UserController (controller/UserController.java)
+
+java
+Copy
+Edit
+package com.example.demo.controller;
+
+import com.example.demo.dto.UserRequest;
+import com.example.demo.dto.UserResponse;
+import com.example.demo.service.UserService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/users")
+@RequiredArgsConstructor
+public class UserController {
+
+    private final UserService userService;
+
+    @PostMapping
+    public ResponseEntity<UserResponse> getUsers(@RequestBody UserRequest request) {
+        UserResponse response = userService.fetchUsers(request);
+        return ResponseEntity.ok(response);
+    }
+}
+3. UserService (service/UserService.java)
+
+java
+Copy
+Edit
+package com.example.demo.service;
+
+import com.example.demo.dto.UserRequest;
+import com.example.demo.dto.UserResponse;
+import com.example.demo.entity.User;
+import com.example.demo.repository.UserRepository;
+import com.example.demo.repository.UserRepository.OutputHolder;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
+
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class UserService {
+
+    private final UserRepository userRepository;
+
+    public UserResponse fetchUsers(UserRequest request) {
+        if (request.getSearchCriteria() == null 
+            || CollectionUtils.isEmpty(request.getSearchValue())) {
+            throw new IllegalArgumentException("searchCriteria and searchValue must be provided");
+        }
+
+        String criteria = request.getSearchCriteria().trim().toUpperCase();
+        String joinedValues = String.join(",", request.getSearchValue());
+
+        OutputHolder outputHolder = new OutputHolder();
+        List<User> users;
+
+        if ("SOEID".equals(criteria)) {
+            users = userRepository.getUsersFromProcedure(joinedValues, null, outputHolder);
+        } else if ("GEID".equals(criteria)) {
+            users = userRepository.getUsersFromProcedure(null, joinedValues, outputHolder);
+        } else {
+            throw new IllegalArgumentException("searchCriteria must be either SOEID or GEID");
+        }
+
+        UserResponse response = new UserResponse();
+        response.setStatus(outputHolder.getStatus());
+        response.setUsers(users);
+        return response;
+    }
+}
+4. Repository (Unchanged - Cursor handling) repository/UserRepository.java
+
+java
+Copy
+Edit
+package com.example.demo.repository;
+
+import com.example.demo.entity.User;
+import jakarta.persistence.*;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+
+@Repository
+@RequiredArgsConstructor
+public class UserRepository {
+
+    private final EntityManager entityManager;
+
+    @SuppressWarnings("unchecked")
+    public List<User> getUsersFromProcedure(String soeid, String geid, OutputHolder outputHolder) {
+        StoredProcedureQuery query = entityManager
+            .createStoredProcedureQuery("sp_get_users", User.class);
+
+        query.registerStoredProcedureParameter("soeid", String.class, ParameterMode.IN);
+        query.registerStoredProcedureParameter("geid", String.class, ParameterMode.IN);
+        query.registerStoredProcedureParameter("out_cursor", void.class, ParameterMode.REF_CURSOR);
+        query.registerStoredProcedureParameter("out_status", String.class, ParameterMode.OUT);
+
+        query.setParameter("soeid", soeid);
+        query.setParameter("geid", geid);
+
+        query.execute();
+
+        List<User> users = query.getResultList();
+        outputHolder.setStatus((String) query.getOutputParameterValue("out_status"));
+
+        return users;
+    }
+
+    @Data
+    public static class OutputHolder {
+        private String status;
+    }
+}
+5. Exception Handler (unchanged) exception/CustomExceptionHandler.java
+
+java
+Copy
+Edit
+package com.example.demo.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import java.util.Map;
+
+@RestControllerAdvice
+public class CustomExceptionHandler {
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, String>> handleException(Exception ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                             .body(Map.of("error", "Internal Server Error"));
+    }
+}
+🚀 Example Test (Postman):
+Request
+
+json
+Copy
+Edit
+POST http://localhost:8080/api/users
+Content-Type: application/json
+
+{
+  "searchCriteria": "SOEID",
+  "searchValue": ["123", "6744", "5667"]
+}
+Response
+
+json
+Copy
+Edit
+{
+  "status": "Success",
+  "users": [
+    {
+      "id": "123",
+      "name": "John Doe",
+      "email": "john@example.com",
+      "managerId": "789",
+      "department": "HR",
+      "role": "Manager",
+      "location": "NY",
+      "phone": "1234567890",
+      "status": "Active",
+      "createdDate": "2023-04-22"
+    },
+    {
+      "id": "6744",
+      "name": "Jane Doe",
+      "email": "jane@example.com",
+      "managerId": "789",
+      "department": "Finance",
+      "role": "Analyst",
+      "location": "LA",
+      "phone": "0987654321",
+      "status": "Active",
+      "createdDate": "2023-03-15"
+    }
+  ]
+}
+✅ Highlights & Changes:
+New input format properly handled via DTO (searchCriteria and searchValue).
+
+Validation is done clearly in the UserService.
+
+Stored Procedure call adjusted dynamically based on searchCriteria.
+
+Proper error messages provided for invalid input.
+
+Clean separation of concerns maintained (Controller → Service → Repository).
+
+This solution correctly implements the requested JSON input format, clearly handling cursor output from Oracle, and maintaining good Spring Boot best practices.

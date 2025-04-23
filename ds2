@@ -251,3 +251,89 @@ Proper error messages provided for invalid input.
 Clean separation of concerns maintained (Controller → Service → Repository).
 
 This solution correctly implements the requested JSON input format, clearly handling cursor output from Oracle, and maintaining good Spring Boot best practices.
+------
+
+
+package com.example.demo.dto;
+
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import lombok.Data;
+import java.util.List;
+
+@Data
+public class UserRequest {
+
+    @NotNull(message = "searchCriteria cannot be null")
+    private String searchCriteria; // SOEID or GEID
+
+    @NotEmpty(message = "searchValue cannot be empty")
+    @Size(max = 100, message = "searchValue cannot contain more than 100 items")
+    private List<String> searchValue;
+}
+
+
+package com.example.demo.controller;
+
+import com.example.demo.dto.UserRequest;
+import com.example.demo.dto.UserResponse;
+import com.example.demo.service.UserService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/users")
+@RequiredArgsConstructor
+public class UserController {
+
+    private final UserService userService;
+
+    @PostMapping
+    public ResponseEntity<UserResponse> getUsers(@Valid @RequestBody UserRequest request) {
+        UserResponse response = userService.fetchUsers(request);
+        return ResponseEntity.ok(response);
+    }
+}
+
+
+
+
+package com.example.demo.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@RestControllerAdvice
+public class CustomExceptionHandler {
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, String>> handleValidationExceptions(MethodArgumentNotValidException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getFieldErrors().forEach(error ->
+            errors.put(error.getField(), error.getDefaultMessage())
+        );
+        return ResponseEntity.badRequest().body(errors);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, String>> handleException(Exception ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                             .body(Map.of("error", "Internal Server Error"));
+    }
+}
+
+

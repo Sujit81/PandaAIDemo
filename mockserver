@@ -1,0 +1,94 @@
+package com.example.mock;
+
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static org.junit.jupiter.api.Assertions.*;
+
+import com.github.tomakehurst.wiremock.junit5.WireMockRuntimeInfo;
+import com.github.tomakehurst.wiremock.junit5.WireMockTest;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.commons.io.IOUtils;
+import org.junit.jupiter.api.Test;
+
+import javax.net.ssl.*;
+import java.io.ByteArrayOutputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+@WireMockTest(httpsEnabled = true)                    // starts/stops HTTPS server per‑class
+class ExcelWireMockTest {
+
+    // ---------- utility: build a small Excel workbook ----------
+    private static byte[] createXls() throws Exception {
+        try (HSSFWorkbook wb = new HSSFWorkbook();
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+
+            Sheet sheet = wb.createSheet("Data");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("id");
+            header.createCell(1).setCellValue("value");
+
+            Row row = sheet.createRow(1);
+            row.createCell(0).setCellValue(1);
+            row.createCell(1).setCellValue(42);
+
+            wb.write(bos);
+            return bos.toByteArray();                // return raw .xls bytes
+        }
+    }
+
+    // ---------- the test itself ----------
+    @Test
+    void shouldServeAndDownloadXls(WireMockRuntimeInfo wm) throws Exception {
+
+        /* 1‑A) build the workbook ======================================================= */
+        byte[] expectedBytes = createXls();
+
+        /* 1‑B) register stub on running WireMock instance =============================== */
+        wm.getWireMock().stubFor(
+            get("/files/report.xls")
+                .willReturn(aResponse()
+                    .withHeader("Content-Type", "application/vnd.ms-excel")
+                    .withBody(expectedBytes)));
+
+        /* 2) create a permissive SSL context (trusts WireMock’s self‑signed cert) ======= */
+        SSLContext insecureSsl = SSLContext.getInstance("TLS");
+        insecureSsl.init(null, new TrustManager[]{new X509TrustManager() {
+            public void checkClientTrusted(java.security.cert.X509Certificate[] c, String a) {}
+            public void checkServerTrusted(java.security.cert.X509Certificate[] c, String a) {}
+            public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+        }}, new java.security.SecureRandom());
+
+        /* 3) build HttpClient pointing at WireMock HTTPS =============================== */
+        HttpClient client = HttpClient.newBuilder()
+                .sslContext(insecureSsl)
+                .build();
+
+        String url = wm.getHttpsBaseUrl() + "/files/report.xls";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .GET()
+                .build();
+
+        /* 4) perform download & assertions ============================================= */
+        HttpResponse<byte[]> response =
+                client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(200, response.statusCode(), "HTTP status");
+        assertTrue(response.headers().firstValue("Content-Type")
+                .orElse("").startsWith("application/vnd.ms-excel"), "MIME type");
+
+        // byte‑for‑byte equality
+        assertArrayEquals(expectedBytes, response.body(), "downloaded workbook matches");
+
+        // (optional) deep check: parse the returned workbook
+        try (HSSFWorkbook wb = new HSSFWorkbook(IOUtils.toInputStream(response.body()))) {
+            Sheet s = wb.getSheetAt(0);
+            assertEquals("id",   s.getRow(0).getCell(0).getStringCellValue());
+            assertEquals(42.0,   s.getRow(1).getCell(1).getNumericCellValue());
+        }
+    }
+}

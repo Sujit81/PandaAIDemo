@@ -1,17 +1,17 @@
 SSLContext sslContext = SSLContexts.custom()
-        .loadTrustMaterial(null, TrustAllStrategy.INSTANCE)   // or your own
+        .loadTrustMaterial(new File("truststore.jks"), "changeit".toCharArray())
         .build();
 
-TlsStrategy tlsStrategy = ClientTlsStrategyBuilder.create()
+TlsSocketStrategy tlsStrategy = ClientTlsStrategyBuilder.create()
         .setSslContext(sslContext)
-        .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
         .build();
 
-PoolingHttpClientConnectionManager cm =
-        PoolingHttpClientConnectionManagerBuilder.create()
-            .setTlsStrategy(tlsStrategy)           // ← new API replaces setSSLSocketFactory
-            .build();
+var cm = PoolingHttpClientConnectionManagerBuilder.create()
+        .setTlsSocketStrategy(tlsStrategy)   // <‑‑ new name
+        .build();
 
-CloseableHttpClient client = HttpClients.custom()
+try (CloseableHttpClient client = HttpClients.custom()
         .setConnectionManager(cm)
-        .build();
+        .build()) {
+    // use the client…
+}

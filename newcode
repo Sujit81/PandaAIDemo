@@ -1,17 +1,29 @@
+import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
+import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactoryBuilder;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.ssl.SSLContexts;
+import org.apache.hc.core5.ssl.TLS;
+import javax.net.ssl.SSLContext;
+
+// 1) Create / tweak the SSLContext
 SSLContext sslContext = SSLContexts.custom()
-        .loadTrustMaterial(null, TrustAllStrategy.INSTANCE)   // or your own
+        .loadTrustMaterial((KeyStore) null, (chain, authType) -> true)  // trust‑all for demo
         .build();
 
-TlsStrategy tlsStrategy = ClientTlsStrategyBuilder.create()
+// 2) Build a *deprecated* but still functional socket factory
+SSLConnectionSocketFactory socketFactory = SSLConnectionSocketFactoryBuilder.create()
         .setSslContext(sslContext)
-        .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
+        .setTlsVersions(TLS.V_1_3)                    // force strong version
         .build();
 
-PoolingHttpClientConnectionManager cm =
-        PoolingHttpClientConnectionManagerBuilder.create()
-            .setTlsStrategy(tlsStrategy)           // ← new API replaces setSSLSocketFactory
-            .build();
+// 3) Attach it to the connection‑manager builder
+var cm = PoolingHttpClientConnectionManagerBuilder.create()
+        .setSSLSocketFactory(socketFactory)           // ← key line
+        .build();
 
+// 4) Ship the client
 CloseableHttpClient client = HttpClients.custom()
         .setConnectionManager(cm)
         .build();

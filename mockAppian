@@ -1,0 +1,48 @@
+<!-- pom.xml -->
+<dependency>
+  <groupId>org.wiremock</groupId>
+  <artifactId>wiremock</artifactId>
+  <version>3.13.0</version>      <!-- current stable, May 2025 -->
+  <scope>test</scope>
+</dependency>
+
+
+@ExtendWith(WireMockExtension.class)
+class FileDownloadTest {
+
+    // HTTPS only on port 9443, HTTP listener disabled
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance()
+        .options(wireMockConfig()
+                 .httpsPort(9443)          // <-- fixed, not random
+                 .httpDisabled(true))      // <-- turn HTTP off
+        .build();
+
+    @BeforeAll
+    static void stubFile() {
+        wm.stubFor(get(urlEqualTo("/files/report"))
+            .willReturn(aResponse()
+                .withHeader("Content-Type",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                .withBodyFile("report.xlsx")));
+    }
+
+    @Test
+    void downloadsFile_overHttps() throws Exception {
+        // URL uses the fixed port we chose
+        String url = "https://localhost:9443/files/report";
+
+        // Quick-and-dirty trust-all client for test purposes
+        HttpClient http = HttpClient.newBuilder()
+            .sslContext(SSLContexts.custom()
+                .loadTrustMaterial(null, (c, a) -> true)   // trust the self-signed cert
+                .build())
+            .build();
+
+        var resp = http.send(HttpRequest.newBuilder(URI.create(url)).build(),
+                             HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(200, resp.statusCode());
+        assertTrue(resp.body().length > 0);
+    }
+}

@@ -56,4 +56,23 @@ class FileDownloadTest {
     "headers": { "Content-Type": "application/pdf" },
     "bodyFileName": "report.pdf"
   }
+
+
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;   // get(), urlEqualTo(), aResponse()
+
+import org.apache.hc.client5.http.ssl.SSLContexts;                // build a “trust-all” SSLContext
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 }

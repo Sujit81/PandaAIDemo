@@ -1,78 +1,97 @@
 <!-- pom.xml -->
 <dependency>
-  <groupId>org.wiremock</groupId>
-  <artifactId>wiremock</artifactId>
-  <version>3.13.0</version>      <!-- current stable, May 2025 -->
-  <scope>test</scope>
+    <groupId>org.mock-server</groupId>
+    <artifactId>mockserver-junit-jupiter</artifactId>
+    <version>5.15.0</version>      <!-- current stable, May 2025 -->
+    <scope>test</scope>
 </dependency>
 
 
-@ExtendWith(WireMockExtension.class)
-class FileDownloadTest {
 
-    // HTTPS only on port 9443, HTTP listener disabled
-    @RegisterExtension
-    static WireMockExtension wm = WireMockExtension.newInstance()
-        .options(wireMockConfig()
-                 .httpsPort(9443)          // <-- fixed, not random
-                 .httpDisabled(true))      // <-- turn HTTP off
-        .build();
+package demo;
 
-    @BeforeAll
-    static void stubFile() {
-        wm.stubFor(get(urlEqualTo("/files/report"))
-            .willReturn(aResponse()
-                .withHeader("Content-Type",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                .withBodyFile("report.xlsx")));
-    }
-
-    @Test
-    void downloadsFile_overHttps() throws Exception {
-        // URL uses the fixed port we chose
-        String url = "https://localhost:9443/files/report";
-
-        // Quick-and-dirty trust-all client for test purposes
-        HttpClient http = HttpClient.newBuilder()
-            .sslContext(SSLContexts.custom()
-                .loadTrustMaterial(null, (c, a) -> true)   // trust the self-signed cert
-                .build())
-            .build();
-
-        var resp = http.send(HttpRequest.newBuilder(URI.create(url)).build(),
-                             HttpResponse.BodyHandlers.ofByteArray());
-
-        assertEquals(200, resp.statusCode());
-        assertTrue(resp.body().length > 0);
-    }
-}
-
-
-
-{
-  "request": { "method": "GET", "url": "/files/report" },
-  "response": {
-    "status": 200,
-    "headers": { "Content-Type": "application/pdf" },
-    "bodyFileName": "report.pdf"
-  }
-
-
-import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
-import static com.github.tomakehurst.wiremock.client.WireMock.*;   // get(), urlEqualTo(), aResponse()
-
-import org.apache.hc.client5.http.ssl.SSLContexts;                // build a “trust-all” SSLContext
+import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+import static org.mockserver.model.BinaryBody.binary;
+import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.junit.jupiter.api.extension.RegisterExtension;
 
+import org.mockserver.client.MockServerClient;
+import org.mockserver.junit.jupiter.MockServerExtension;
+import org.mockserver.junit.jupiter.MockServerSettings;
+
+import javax.net.ssl.*;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+@ExtendWith(MockServerExtension.class)
+/* pin the server to 9443 — MockServer’s “port-unification”
+   accepts HTTPS on this port, we restrict the expectation
+   itself to secure traffic so plain-HTTP calls 404 */
+@MockServerSettings(ports = {9443})
+class FileDownloadTest {
+
+    private final MockServerClient mock;          // injected by the extension
+    private static final int HTTPS_PORT = 9443;
+
+    FileDownloadTest(MockServerClient client) {   // constructor injection
+        this.mock = client;
+    }
+
+    @BeforeAll
+    static void stubFile(MockServerClient mock) throws Exception {
+        mock.when(
+                request()
+                        .withSecure(true)                 // reject plain HTTP
+                        .withMethod("GET")
+                        .withPath("/files/report")
+        ).respond(
+                response()
+                        .withStatusCode(200)
+                        .withHeader("Content-Type",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        .withBody(
+                                binary(Files.readAllBytes(
+                                        Paths.get("src/test/resources/report.xlsx"))))
+        );
+    }
+
+    @Test
+    void downloadsFile_overHttps() throws Exception {
+        SSLContext insecure = trustAllSslContext();       // trust MockServer CA
+        HttpClient http = HttpClient.newBuilder()
+                                    .sslContext(insecure)
+                                    .build();
+
+        HttpRequest req = HttpRequest.newBuilder(
+                new URI("https://localhost:" + HTTPS_PORT + "/files/report"))
+                .build();
+
+        HttpResponse<byte[]> resp = http.send(
+                req, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(200, resp.statusCode());
+        assertTrue(resp.body().length > 0);
+    }
+
+    /* helper that turns off certificate + hostname checking */
+    private static SSLContext trustAllSslContext() throws Exception {
+        TrustManager[] tm = { new X509TrustManager() {
+            public void checkClientTrusted(X509Certificate[] x, String a) {}
+            public void checkServerTrusted(X509Certificate[] x, String a) {}
+            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+        }};
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, tm, new SecureRandom());
+        return ctx;
+    }
 }

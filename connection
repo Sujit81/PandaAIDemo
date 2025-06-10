@@ -1,0 +1,36 @@
+# ── Oracle JDBC basics ──────────────────────────────────────────────────────────
+spring.datasource.url=jdbc:oracle:thin:@//DB-HOST:1521/ORCLPDB1           # ⇦ service or SID
+spring.datasource.username=APP_USER
+spring.datasource.password=STRONG_SECRET
+spring.datasource.driver-class-name=oracle.jdbc.OracleDriver              # ← use the newer class
+
+# ── HikariCP sizing ────────────────────────────────────────────────────────────
+spring.datasource.hikari.pool-name=HikariPool-Orcl
+spring.datasource.hikari.maximum-pool-size=20          # CPU-cores×2 is a safe start
+spring.datasource.hikari.minimum-idle=5                # keep warm connections ready
+
+# ── Time-outs (ms) ─────────────────────────────────────────────────────────────
+spring.datasource.hikari.connection-timeout=30000      # max wait for a free connection
+spring.datasource.hikari.idle-timeout=300000           # recycle idle >5 min
+spring.datasource.hikari.max-lifetime=1800000          # retire before DB/network kills it
+
+# ── Validation & leak detection ───────────────────────────────────────────────
+spring.datasource.hikari.connection-test-query=SELECT 1 FROM DUAL        # cheap Oracle ping
+spring.datasource.hikari.leak-detection-threshold=60000                  # warn if held >60 s
+
+# ── Oracle-specific driver tweaks (pass as data-source-properties) ────────────
+spring.datasource.hikari.data-source-properties.oracle.jdbc.defaultConnectionValidation=LOCAL
+spring.datasource.hikari.data-source-properties.oracle.net.CONNECT_TIMEOUT=5000
+spring.datasource.hikari.data-source-properties.oracle.jdbc.ReadTimeout=30000
+
+# ── (Optional) JPA / Hibernate knobs ──────────────────────────────────────────
+spring.jpa.open-in-view=false
+spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation=true
+spring.jpa.show-sql=false
+
+
+# ── Default schema (JPA / Hibernate) ───────────────────────────────────────────
+spring.jpa.properties.hibernate.default_schema=ACCTG        # ↩️ used for DDL and SQL that Hibernate generates
+
+# ── Force each new JDBC session into that schema ──────────────────────────────
+spring.datasource.hikari.connection-init-sql=ALTER SESSION SET CURRENT_SCHEMA=ACCTG

@@ -1,24 +1,44 @@
-from aspose.cells import LoadOptions, LightCellsDataHandler, Workbook, MemorySetting
+import jpype
+import asposecells  # pip install aspose-cells
 
-class MyReader(LightCellsDataHandler):
-    def start_sheet(self, index):
-        # e.g. only process first sheet
-        return index == 0
+# -------- Start the JVM --------
+jpype.startJVM(classpath=[asposecells.__jar__])     # JPype ≥ 1.4
+from jpype import JImplements, JOverride           # decorators are faster than JProxy
 
-    def start_row(self, row):
-        self.row_idx = row.index
-        return True            # process this row
+from com.aspose.cells import LoadOptions, Workbook, MemorySetting
 
-    def process_cell(self, cell):
-        # lightweight work – avoid expensive Python calls here
-        print(self.row_idx, cell.column, cell.value)
+# -------- Implement the Java interface --------
+@JImplements("com.aspose.cells.LightCellsDataHandler")
+class MyHandler(object):
+
+    @JOverride          # worksheet-level filter
+    def startSheet(self, sheet):
+        return sheet.getName() == "Data"           # keep only one sheet
+
+    @JOverride          # row-level filter
+    def startRow(self, row):
+        self.rowIdx = row.getIndex()
+        return True                                # process this row
+
+    @JOverride          # called once per cell that survived the two filters
+    def processCell(self, cell):
+        print(self.rowIdx, cell.getColumn(), cell.getValue())
         return True
 
-# Configure streaming load
-opts = LoadOptions()
-opts.light_cells_data_handler = MyReader()
-opts.memory_setting = MemorySetting.MEMORY_PREFERENCE   # further trims RAM :contentReference[oaicite:4]{index=4}
-opts.set_parse_formula_on_open(False)                   # skip formula parsing if you don’t need it
+    # These two must exist; return value is ignored
+    def endRow(self):
+        return True
+    def endSheet(self):
+        return True
 
-wb = Workbook("big.xlsx", opts)   # triggers the streaming parse
-# At this point wb contains *no* cell data – all work happened in your handler
+handler = MyHandler()          # JPype turns it into a Java proxy on instantiation
+
+# -------- Configure streaming load --------
+opts = LoadOptions()
+opts.setLightCellsDataHandler(handler)
+opts.setMemorySetting(MemorySetting.MEMORY_PREFERENCE)   # keep rows on disk
+opts.setParseFormulaOnOpen(False)                        # skip formula parsing
+
+# -------- Trigger parsing (streaming happens here) --------
+Workbook("really_big.xlsx", opts)
+jpype.shutdownJVM()

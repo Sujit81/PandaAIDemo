@@ -1,0 +1,24 @@
+from aspose.cells import LoadOptions, LightCellsDataHandler, Workbook, MemorySetting
+
+class MyReader(LightCellsDataHandler):
+    def start_sheet(self, index):
+        # e.g. only process first sheet
+        return index == 0
+
+    def start_row(self, row):
+        self.row_idx = row.index
+        return True            # process this row
+
+    def process_cell(self, cell):
+        # lightweight work – avoid expensive Python calls here
+        print(self.row_idx, cell.column, cell.value)
+        return True
+
+# Configure streaming load
+opts = LoadOptions()
+opts.light_cells_data_handler = MyReader()
+opts.memory_setting = MemorySetting.MEMORY_PREFERENCE   # further trims RAM :contentReference[oaicite:4]{index=4}
+opts.set_parse_formula_on_open(False)                   # skip formula parsing if you don’t need it
+
+wb = Workbook("big.xlsx", opts)   # triggers the streaming parse
+# At this point wb contains *no* cell data – all work happened in your handler

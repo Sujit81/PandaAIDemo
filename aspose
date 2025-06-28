@@ -53,3 +53,38 @@ opts.setParseFormulaOnOpen(False)                        # skip formula parsing
 # -------- Trigger parsing (streaming happens here) --------
 Workbook("really_big.xlsx", opts)
 jpype.shutdownJVM()
+
+
+
+import jpype
+from asposecells.api import Workbook, LoadOptions
+
+# Define a handler class (no inheritance)
+class MyCellHandler:
+    def startSheet(self, sheet_index, cells):
+        # Process only the first sheet
+        return sheet_index == 0  
+    
+    def startRow(self, row_index, row):
+        # Skip first 3 header rows
+        return row_index >= 3  
+    
+    def processCell(self, column_index, cell):
+        # Access cell value
+        print(f"Row {cell.getRow()}, Col {column_index}: {cell.getStringValue()}")
+        return True
+
+# Start JVM (if not already running)
+jpype.startJVM() 
+
+# Create Java proxy for LightCellsDataHandler
+LightCellsDataHandler = jpype.JClass("com.aspose.cells.LightCellsDataHandler")
+handler_proxy = LightCellsDataHandler(MyCellHandler())
+
+# Configure and load workbook
+load_opt = LoadOptions()
+load_opt.setLightCellsDataHandler(handler_proxy)
+workbook = Workbook("large_file.xlsx", load_opt)  # Triggers streaming read
+
+# Shutdown JVM when done
+jpype.shutdownJVM()

@@ -11,25 +11,36 @@ from com.aspose.cells import LoadOptions, Workbook, MemorySetting
 @JImplements("com.aspose.cells.LightCellsDataHandler")
 class MyHandler(object):
 
-    @JOverride          # worksheet-level filter
+    # ---------- sheet ----------
+    @JOverride
     def startSheet(self, sheet):
-        return sheet.getName() == "Data"           # keep only one sheet
+        return sheet.getName() == "Data"       # keep only the sheet we need
 
-    @JOverride          # row-level filter
-    def startRow(self, row):
-        self.rowIdx = row.getIndex()
-        return True                                # process this row
+    # ---------- row (2 callbacks) ----------
+    @JOverride
+    def startRow(self, rowIndex):
+        self.rowIdx = rowIndex                 # remember index for later
+        return True                            # read row props → will call processRow
 
-    @JOverride          # called once per cell that survived the two filters
-    def processCell(self, cell):
+    @JOverride
+    def processRow(self, row):                 # 'row' is com.aspose.cells.Row
+        if row.isHidden():                     # skip hidden rows, for example
+            return False                       # → skip every cell in this row
+        return True                            # → walk through cells
+
+    # ---------- cell (2 callbacks) ----------
+    @JOverride
+    def startCell(self, colIndex):
+        return True                            # keep every cell (quick filter point)
+
+    @JOverride
+    def processCell(self, cell):               # 'cell' is com.aspose.cells.Cell
         print(self.rowIdx, cell.getColumn(), cell.getValue())
         return True
 
-    # These two must exist; return value is ignored
-    def endRow(self):
-        return True
-    def endSheet(self):
-        return True
+    # ---------- required no-op ends ----------
+    def endRow(self):   return True
+    def endSheet(self): return True
 
 handler = MyHandler()          # JPype turns it into a Java proxy on instantiation
 

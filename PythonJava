@@ -1,0 +1,35 @@
+import subprocess, tempfile, pathlib, os, jpype, asposecells
+
+# -------- 1.  write the Java source into a temp dir --------
+src = """
+package scratch;
+import com.aspose.cells.*;
+import java.util.*;
+
+public class StreamReader implements LightCellsDataHandler {
+    private final java.util.List<Object[]> rows = new java.util.ArrayList<>();
+    private Object[] buf;
+    private int maxCols;
+
+    public boolean startSheet(Worksheet s){ maxCols = s.getCells().getMaxColumn()+1; return true; }
+    public boolean startRow(int idx){ buf = null; return true; }
+    public boolean processRow(Row r){ return true; }
+    public boolean startCell(int col){ if(buf==null) buf = new Object[maxCols]; return true; }
+    public boolean processCell(Cell c){ buf[c.getColumn()] = c.getValue(); return true; }
+    public boolean endRow(){ if(buf!=null) rows.add(buf); return true; }
+    public boolean endSheet(){ return true; }
+
+    public java.util.List<Object[]> getRows(){ return rows; }
+}
+"""
+tmpdir = tempfile.TemporaryDirectory(); srcfile = pathlib.Path(tmpdir.name, "StreamReader.java")
+srcfile.write_text(src)
+
+# -------- 2.  invoke javac (requires JDK, not JRE) --------
+asp_jars = ":".join(jpype.getClassPath())          # Aspose jars already on wheel path
+subprocess.check_call(["javac", "-cp", asp_jars, "-d", tmpdir.name, str(srcfile)])
+
+# -------- 3.  start JVM with that directory on the class-path --------
+jpype.startJVM(classpath=[tmpdir.name])            # add temp dir plus Aspose jars auto-added
+from com.aspose.cells import LoadOptions, Workbook, MemorySetting
+StreamReader = jpype.JClass("scratch.StreamReader")   # now resolvable

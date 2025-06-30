@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+Chat with a multi-sheet Excel workbook:
+
+• DuckDB for storage & SQL
+• Google Gemini 2.5 Pro for natural-language reasoning
+• Google GenAI text-embedding-004 for vector search
+• LlamaIndex Router to auto-choose SQL vs. vector answers
+"""
+
+import pathlib, time, warnings, duckdb, pandas as pd
+from tqdm import tqdm
+
+# ---------- paths -------------------------------------------------
+XL_PATH = pathlib.Path("Financial Sample.xlsx").resolve()
+DB_PATH = pathlib.Path("Financial Sample.duckdb").resolve()
+
+# ---------- DuckDB quirks patch (older duckdb-engine) -------------
+duckdb.DuckDBPyConnection.connection = property(lambda self: self)
+duckdb.DuckDBPyConnection.notices = []
+
+# ---------- 1.  Load every sheet into DuckDB ----------------------
+con = duckdb.connect(str(DB_PATH))
+con.execute("INSTALL excel; LOAD excel;")
+
+def q(ident: str) -> str:      # safe identifier quoting
+    return '"' + ident.replace('"', '""') + '"'
+
+sheets = pd.ExcelFile(XL_PATH).sheet_names
+print(f"▶ Loading {len(sheets)} sheet(s)…")
+for sh in tqdm(sheets):
+    con.execute(
+        f"CREATE OR REPLACE TABLE {q(sh)} AS "
+        f"SELECT * FROM read_xlsx(?, sheet=>?)",
+        [str(XL_PATH), sh],
+    )
+
+# ---------- 2.  Global LlamaIndex settings ------------------------
+from llama_index.core import Settings
+from llama_index.llms.gemini import Gemini
+from llama_index.embeddings.google_genai import GoogleGenAIEmbedding   # :contentReference[oaicite:0]{index=0}
+
+Settings.llm = Gemini(
+    model_name="gemini-2.5-flash",    # newest public text model
+    request_timeout=120,
+)
+
+from llama_index.core.node_parser import SentenceSplitter
+Settings.text_splitter = SentenceSplitter(chunk_size=512, chunk_overlap=64)
+
+Settings.embed_model = GoogleGenAIEmbedding(        # text-embedding API :contentReference[oaicite:1]{index=1}
+    model_name="models/text-embedding-004"
+)
+
+# ---------- 3.  Build DuckDB-backed vector store ------------------
+from llama_index.vector_stores.duckdb import DuckDBVectorStore
+from llama_index.core import Document, VectorStoreIndex
+from sqlalchemy import create_engine
+
+engine = create_engine("duckdb://", creator=lambda: con)   # reuse same conn
+vec_store = DuckDBVectorStore(database=str(DB_PATH), table_name="embeddings")
+
+docs = []
+for sh in sheets:
+    for chunk in pd.read_sql_query(f"SELECT * FROM {q(sh)}", engine, chunksize=2000):
+        docs.append(Document(text=chunk.to_csv(index=False), metadata={"sheet": sh}))
+
+# print(f"▶ Embedding {len(docs):,} chunks …")
+# index      = VectorStoreIndex.from_documents(docs, vector_store=vec_store)
+# vec_engine = index.as_query_engine(similarity_top_k=8)
+
+# ---------- 4.  NL-to-SQL engine ---------------------------------
+from llama_index.core import SQLDatabase
+from llama_index.core.query_engine import NLSQLTableQueryEngine
+
+sql_db   = SQLDatabase(engine)
+sql_engine = NLSQLTableQueryEngine(
+    sql_database=sql_db,
+    llm=Settings.llm,
+    synthesize_response=True,
+    top_k_tables=4,
+    sample_rows_in_table_info=0,  # 🚫 no sample rows sent to LLM
+    indexes_in_table_info=False,
+)
+
+# ---------- 5.  Router that picks the engine ---------------------
+from llama_index.core.tools import QueryEngineTool, ToolMetadata
+from llama_index.core.query_engine import RouterQueryEngine
+from llama_index.core.selectors import LLMSingleSelector
+
+# tools = [
+#     QueryEngineTool(
+#         query_engine=sql_engine,
+#         metadata=ToolMetadata(
+#             name="workbook-sql",
+#             description="Use for totals, averages, filters—anything numeric"
+#         ),
+#     ),
+#     QueryEngineTool(
+#         query_engine=vec_engine,
+#         metadata=ToolMetadata(
+#             name="workbook-docs",
+#             description="Use for explanations, trends, definitions, or open-ended questions"
+#         ),
+#     ),
+# ]
+
+tools = [
+    QueryEngineTool(
+        query_engine=sql_engine,
+        metadata=ToolMetadata(
+            name="workbook-sql",
+            description="Use for totals, averages, filters—anything numeric"
+        ),
+    ),
+]
+
+selector = LLMSingleSelector.from_defaults(llm=Settings.llm)
+router   = RouterQueryEngine(
+    query_engine_tools=tools,
+    selector=selector,
+    llm=Settings.llm,
+    verbose=True,
+)
+
+from llama_index.core import Settings
+from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler
+from llama_index.core.callbacks.schema import CBEventType   # only if you want to filter
+
+# 1️⃣  Create the handler (no kwargs)
+dbg = LlamaDebugHandler()
+
+# 2️⃣  (Optional) show only LLM calls instead of every event
+# dbg.filter_events = {CBEventType.LLM}
+
+# 3️⃣  Register it before you build any engines
+Settings.callback_manager = CallbackManager(handlers=[dbg])
+
+
+
+
+# ---------- 6.  Simple REPL --------------------------------------
+warnings.filterwarnings("ignore", category=UserWarning, module="duckdb_engine")
+
+print("\n🟢 Ask me about the workbook! (Ctrl-C to quit)\n")
+try:
+    while True:
+        q = input("Q> ").strip()
+        if not q:
+            continue
+        t0   = time.perf_counter()
+        ans  = router.query(q)
+        took = time.perf_counter() - t0
+        print(f"\nA> {ans.response}\n   (answered in {took:.1f}s)\n")
+except KeyboardInterrupt:
+    print("\nBye!")

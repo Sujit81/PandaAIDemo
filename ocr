@@ -1,0 +1,74 @@
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
+import base64
+
+# --- Configuration ---
+# TODO(developer): Update these variables before running the sample.
+PROJECT_ID = "your-gcp-project-id"  # @param {type:"string"}
+LOCATION = "your-gcp-location"  # @param {type:"string"}
+# For a list of supported models, see:
+# https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models
+MODEL_ID = "gemini-1.5-flash-001"  # @param {type:"string"}
+
+# --- Initialization ---
+vertexai.init(project=PROJECT_ID, location=LOCATION)
+model = GenerativeModel(MODEL_ID)
+
+# --- Function to get text from an image ---
+def get_text_from_image(image_path: str, prompt: str) -> str:
+    """
+    Sends an image and a prompt to the Gemini model to extract text.
+
+    Args:
+        image_path: The local path to the image file.
+        prompt: The text prompt instructing the model.
+
+    Returns:
+        The extracted text from the image.
+    """
+    # Load the image and encode it to base64
+    with open(image_path, "rb") as image_file:
+        image_bytes = image_file.read()
+
+    # Create a Part object from the image bytes and mime type
+    image_part = Part.from_data(
+        data=image_bytes,
+        mime_type="image/png"  # Or "image/jpeg", "image/webp", etc.
+    )
+
+    # Send the prompt and image to the model
+    response = model.generate_content([image_part, prompt])
+
+    # Return the extracted text
+    return response.text
+
+# --- Main execution ---
+if __name__ == "__main__":
+    # Create a dummy image for demonstration purposes.
+    # In a real scenario, you would have your own image file.
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new('RGB', (400, 100), color = (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        try:
+            # Use a common font, handle case where it's not found
+            font = ImageFont.truetype("arial.ttf", 40)
+        except IOError:
+            font = ImageFont.load_default()
+        d.text((10,10), "Hello, Gemini!\nExtract this text.", fill=(0,0,0), font=font)
+        image_path = "sample_image.png"
+        img.save(image_path)
+
+        # The prompt to instruct the model to perform OCR
+        prompt_for_ocr = "Extract all the text from this image."
+
+        # Get the text from the image
+        extracted_text = get_text_from_image(image_path, prompt_for_ocr)
+
+        print("--- Extracted Text ---")
+        print(extracted_text)
+
+    except ImportError:
+        print("Pillow library is not installed. Please install it with 'pip install Pillow' to create a sample image.")
+    except Exception as e:
+        print(f"An error occurred: {e}")

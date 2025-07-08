@@ -1,0 +1,321 @@
+Harnessing Natural Language to Query Complex Databases with Vanna AI and DuckDB
+Effortlessly query a multi-table database using everyday language by leveraging the power of Vanna AI, an open-source Python library, in conjunction with the high-performance in-process analytical database, DuckDB. This combination allows users to ask complex questions in natural language, which Vanna AI then translates into sophisticated SQL queries executed by DuckDB, abstracting away the need for intricate SQL knowledge.
+
+This guide will walk you through setting up a complete workflow with four interconnected tables: customers, products, orders, and order_items. We will define the table structures, populate them with sample data, train a Vanna AI model on the database schema, and finally, pose a natural language question that necessitates joining all four tables to retrieve the answer.
+
+The Power of Vanna AI and DuckDB
+Vanna AI acts as a "translator" between natural language and SQL. It is trained on your database's schema (the DDL or Data Definition Language statements) and, optionally, on sample SQL queries and documentation. This training allows it to understand the relationships between your tables and the meaning of your data. When a user asks a question, Vanna AI uses this knowledge to generate an accurate SQL query.
+
+DuckDB, a fast and efficient in-process OLAP database, is an excellent choice for this task. Its ability to run within the same Python process simplifies the setup and data interaction, making it a seamless backend for Vanna AI.
+
+Step-by-Step Implementation
+Here is a complete Python code snippet demonstrating how to use Vanna AI with DuckDB to query a database with four tables using natural language.
+
+Python
+
+# 1. Installation
+!pip install vanna duckdb
+
+# 2. Import necessary libraries
+import vanna as vn
+import duckdb
+import pandas as pd
+
+# 3. Set up Vanna AI using a local ChromaDB vector store
+class MyVanna(vn.ChromaDB_VectorStore, vn.OpenAI_Api_Key):
+    def __init__(self, config=None):
+        # Replace 'your-api-key' with your actual OpenAI API key
+        # and 'your_model_name' with a name for your Vanna model
+        self.config = {'api_key': 'your-api-key', 'model': 'your_model_name'}
+        super().__init__(config=self.config)
+
+vn_client = MyVanna()
+
+# 4. Connect to a DuckDB database
+# This will create a file named 'my_database.duckdb'
+con = duckdb.connect('my_database.duckdb')
+vn_client.connect_to_duckdb(con)
+
+# 5. Define and create the four tables in DuckDB
+ddl_statements = [
+    """
+    CREATE TABLE customers (
+        customer_id INTEGER PRIMARY KEY,
+        customer_name VARCHAR,
+        city VARCHAR
+    );
+    """,
+    """
+    CREATE TABLE products (
+        product_id INTEGER PRIMARY KEY,
+        product_name VARCHAR,
+        category VARCHAR,
+        price DECIMAL(10, 2)
+    );
+    """,
+    """
+    CREATE TABLE orders (
+        order_id INTEGER PRIMARY KEY,
+        customer_id INTEGER,
+        order_date DATE,
+        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+    );
+    """,
+    """
+    CREATE TABLE order_items (
+        order_item_id INTEGER PRIMARY KEY,
+        order_id INTEGER,
+        product_id INTEGER,
+        quantity INTEGER,
+        FOREIGN KEY (order_id) REFERENCES orders(order_id),
+        FOREIGN KEY (product_id) REFERENCES products(product_id)
+    );
+    """
+]
+
+for ddl in ddl_statements:
+    con.execute(ddl)
+
+# 6. Populate the tables with sample data
+con.execute("INSERT INTO customers VALUES (1, 'Alice', 'New York'), (2, 'Bob', 'Los Angeles');")
+con.execute("INSERT INTO products VALUES (101, 'Laptop', 'Electronics', 1200.00), (102, 'Mouse', 'Electronics', 25.00), (201, 'Desk Chair', 'Furniture', 150.00);")
+con.execute("INSERT INTO orders VALUES (1001, 1, '2024-07-01'), (1002, 2, '2024-07-02');")
+con.execute("INSERT INTO order_items VALUES (1, 1001, 101, 1), (2, 1001, 102, 2), (3, 1002, 201, 1);")
+
+
+# 7. Train the Vanna AI model on the table schemas
+for ddl in ddl_statements:
+    vn_client.train(ddl=ddl)
+
+# You can also add documentation for better understanding
+vn_client.train(documentation="The 'customers' table contains information about our clients.")
+vn_client.train(documentation="The 'products' table lists all available products and their prices.")
+vn_client.train(documentation="The 'orders' table records customer orders.")
+vn_client.train(documentation="The 'order_items' table details the products within each order.")
+
+
+# 8. Ask a question in natural language
+question = "What products did Alice buy and what was the total cost of her order?"
+sql_query = vn_client.ask(question)
+
+# 9. Get the generated SQL and the results as a DataFrame
+if sql_query:
+    print("Generated SQL Query:")
+    print(sql_query)
+    df_result = vn_client.run_sql(sql_query)
+    print("\nQuery Result:")
+    print(df_result)
+
+# 10. Close the database connection
+con.close()
+Explanation of the Code
+Installation: The necessary libraries, vanna and duckdb, are installed.
+
+Import Libraries: The required modules are imported.
+
+Vanna AI Setup: A custom class MyVanna is created to configure Vanna AI with your OpenAI API key and a chosen model name. We use ChromaDB_VectorStore to store the training data locally.
+
+DuckDB Connection: A connection to a DuckDB database file is established. Vanna AI is then linked to this connection.
+
+Table Creation: The CREATE TABLE statements for the four tables are defined. These DDLs specify the columns, data types, and foreign key relationships, which are crucial for Vanna AI to understand the database structure.
+
+Data Population: Sample data is inserted into the tables to have a functional database to query.
+
+Training: The Vanna AI model is trained using the vn_client.train() method. We pass the DDL statements for each table. Additionally, providing documentation in natural language helps the model better grasp the context of each table.
+
+Natural Language Query: A question is formulated in plain English.
+
+SQL Generation and Execution: The vn_client.ask() method sends the question to Vanna AI, which returns the corresponding SQL query. This query is then executed using vn_client.run_sql(), and the results are displayed as a pandas DataFrame.
+
+Connection Closure: The connection to the DuckDB database is closed.
+
+This example showcases the remarkable capability of Vanna AI to simplify database interaction. By training a model on your specific database schema, you empower both technical and non-technical users to extract valuable insights from complex datasets using the simplicity and power of natural language. This approach can significantly accelerate data analysis and make data more accessible across an organization.
+
+
+
+Yes, you can provide a Large Language Model (LLM) with your database schema (DDL) and ask it to generate SQL queries. However, Vanna AI offers several key advantages over this direct approach because it's a specialized, purpose-built system for text-to-SQL tasks.
+
+The core difference lies in Vanna's architecture, which is a Retrieval-Augmented Generation (RAG) system specifically tailored for SQL generation. It's not just a single LLM call.
+
+Key Advantages of Vanna AI
+1. Accuracy and Relevance through a Two-Step Process 🎯
+Instead of just relying on the LLM's general knowledge, Vanna first searches its specialized vector store for the most relevant context based on your question. This context includes your DDL, documentation, and previously successful SQL queries you've trained it on. It then feeds this highly relevant, curated information to the LLM.
+
+Generic LLM: You provide a wall of DDL in the prompt. The LLM has to parse and understand it from scratch every single time, mixed with your question. This can lead to errors or "hallucinated" queries if the schema is complex.
+
+Vanna AI: It retrieves the most pertinent table schemas, joins, and examples related to your specific question ("Which tables mention 'customers' and 'revenue'?"). This focused context dramatically improves the accuracy of the generated SQL.
+
+2. Continuous Learning and Optimization 🧠
+Vanna is designed to get smarter over time within your specific database context.
+
+You can "train" it on successful and optimized SQL queries. It stores these pairs of (question, SQL query) and uses them as examples for future questions.
+
+If Vanna generates an incorrect query, you can provide the correct one, and it learns from the mistake. A generic LLM has no built-in, persistent memory of your past interactions or corrections for your specific database.
+
+3. Enhanced Security and Governance 🔒
+This is a critical advantage. Vanna's architecture allows for a "firewall" between the user and the LLM, and the LLM and your database.
+
+Query Whitelisting: You can train Vanna only on a set of safe, pre-approved SQL queries. If a user's question doesn't map closely to one of these, it can refuse to generate a query, preventing malicious or destructive SQL.
+
+Data Privacy: The LLM doesn't need direct access to your database data. It only ever sees the metadata (DDL, documentation, sample queries) you train it on. The generated SQL is then executed by your system, not the LLM's environment. With a generic LLM, you might inadvertently expose more information than necessary.
+
+4. Simplicity and Abstraction ✨
+Vanna provides a streamlined Python library with simple functions like vn.train() and vn.ask(). It handles the complexities of vector database management, context retrieval, and prompt engineering for you. Doing this manually with a generic LLM requires significantly more boilerplate code and expertise in prompt engineering and RAG systems.
+
+In short, while you can get a generic LLM to write SQL, Vanna provides a robust framework that delivers higher accuracy, security, and continuous improvement specifically for interacting with your database. It moves beyond a simple prompt-and-response and offers a complete, trainable system for text-to-SQL.
+
+
+
+
+
+
+
+How to use vertex ai here
+
+
+
+Show thinking
+Of course. Using Google's own Vertex AI as the Large Language Model (LLM) is an excellent choice, especially if your infrastructure is already on Google Cloud Platform (GCP). Vanna AI is designed to be model-agnostic, allowing you to plug in different LLMs, including those from Vertex AI like Gemini.
+
+The process is very similar to the previous example, with the key difference being the setup and configuration of the Vanna class. Instead of using an OpenAI API key, you will authenticate with Google Cloud and specify a Vertex AI model.
+
+Here’s a step-by-step guide and the updated code on how to integrate Vertex AI.
+
+Pre-requisites
+Google Cloud Project: You need a Google Cloud project with the Vertex AI API enabled.
+
+Authentication: You must be authenticated to your Google Cloud project. The easiest way to do this in a local development environment is to use the Google Cloud CLI:
+
+Bash
+
+gcloud auth application-default login
+Required Libraries: You need to install the Vanna library and the specific Google Cloud client library for Vertex AI.
+
+How to Use Vanna AI with Vertex AI
+The primary change is in how you define your Vanna class. You will inherit from vn.VertexAI_Chat and vn.ChromaDB_VectorStore (or another vector store of your choice).
+
+Here is the complete, modified code snippet:
+
+Python
+
+# 1. Installation
+# Make sure to install the google-cloud-aiplatform library
+!pip install vanna duckdb "google-cloud-aiplatform>=1.51"
+
+# 2. Import necessary libraries
+import vanna as vn
+import duckdb
+import pandas as pd
+# No need to import a specific vertexai library for this basic Vanna usage
+# Vanna handles the client interaction under the hood.
+
+# 3. Set up Vanna to use Vertex AI
+# This class tells Vanna to use Vertex AI for the LLM part
+# and a local ChromaDB for the vector store part.
+class MyVanna(vn.ChromaDB_VectorStore, vn.VertexAI_Chat):
+    def __init__(self, config=None):
+        # The 'config' dictionary specifies the model to use from Vertex AI.
+        # 'gemini-1.0-pro' is a powerful and common choice.
+        # Vanna will automatically use your authenticated gcloud user.
+        super().__init__(config={'model': 'gemini-1.0-pro'})
+
+# Initialize the Vanna client
+vn_client = MyVanna()
+
+# 4. Connect to a DuckDB database
+# This will create a file named 'my_database.duckdb'
+con = duckdb.connect('my_database.duckdb')
+vn_client.connect_to_duckdb(con)
+
+# 5. Define and create the four tables in DuckDB (if not already done)
+# This part of the code remains the same as the previous example.
+# For brevity, we assume the tables are already created and populated.
+# Let's run the DDLs again to be sure.
+
+ddl_statements = [
+    """
+    CREATE OR REPLACE TABLE customers (
+        customer_id INTEGER PRIMARY KEY,
+        customer_name VARCHAR,
+        city VARCHAR
+    );
+    """,
+    """
+    CREATE OR REPLACE TABLE products (
+        product_id INTEGER PRIMARY KEY,
+        product_name VARCHAR,
+        category VARCHAR,
+        price DECIMAL(10, 2)
+    );
+    """,
+    """
+    CREATE OR REPLACE TABLE orders (
+        order_id INTEGER PRIMARY KEY,
+        customer_id INTEGER,
+        order_date DATE,
+        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+    );
+    """,
+    """
+    CREATE OR REPLACE TABLE order_items (
+        order_item_id INTEGER PRIMARY KEY,
+        order_id INTEGER,
+        product_id INTEGER,
+        quantity INTEGER,
+        FOREIGN KEY (order_id) REFERENCES orders(order_id),
+        FOREIGN KEY (product_id) REFERENCES products(product_id)
+    );
+    """
+]
+
+for ddl in ddl_statements:
+    con.execute(ddl)
+
+# 6. Populate the tables with sample data (if not already done)
+con.execute("DELETE FROM customers; DELETE FROM products; DELETE FROM orders; DELETE FROM order_items;") # Clear old data
+con.execute("INSERT INTO customers VALUES (1, 'Alice', 'New York'), (2, 'Bob', 'Los Angeles');")
+con.execute("INSERT INTO products VALUES (101, 'Laptop', 'Electronics', 1200.00), (102, 'Mouse', 'Electronics', 25.00), (201, 'Desk Chair', 'Furniture', 150.00);")
+con.execute("INSERT INTO orders VALUES (1001, 1, '2024-07-01'), (1002, 2, '2024-07-02');")
+con.execute("INSERT INTO order_items VALUES (1, 1001, 101, 1), (2, 1001, 102, 2), (3, 1002, 201, 1);")
+
+# 7. Train the Vanna AI model on the table schemas and documentation
+# This process is identical, but the model doing the learning is now Gemini.
+print("Training Vanna with Vertex AI...")
+for ddl in ddl_statements:
+    vn_client.train(ddl=ddl)
+
+vn_client.train(documentation="The 'customers' table contains information about our clients.")
+vn_client.train(documentation="The 'products' table lists all available products and their prices.")
+vn_client.train(documentation="The 'orders' table records customer orders.")
+vn_client.train(documentation="The 'order_items' table details the products within each order.")
+print("Training complete.")
+
+
+# 8. Ask a question in natural language
+question = "What products did Alice buy and what was the total cost of her order?"
+print(f"\nAsking question: {question}")
+sql_query = vn_client.ask(question)
+
+# 9. Get the generated SQL and the results as a DataFrame
+if sql_query:
+    print("\nGenerated SQL Query by Vertex AI:")
+    print(sql_query)
+    df_result = vn_client.run_sql(sql_query)
+    print("\nQuery Result:")
+    print(df_result)
+else:
+    print("\nSorry, I could not generate a SQL query for that question.")
+
+
+# 10. Close the database connection
+con.close()
+Key Changes and Advantages of Using Vertex AI
+Vanna Class Definition: The core change is class MyVanna(vn.ChromaDB_VectorStore, vn.VertexAI_Chat):. This tells Vanna to use the VertexAI_Chat connector for its LLM logic.
+
+Configuration: The config dictionary now just needs the model name available in your Vertex AI project, for example, 'gemini-1.0-pro' or 'gemini-1.5-flash-001'.
+
+Authentication: Vanna's VertexAI_Chat class is smart enough to automatically pick up your credentials from the environment (e.g., from gcloud auth application-default login). You don't need to manually handle API keys in your code.
+
+Security and Integration: By using Vertex AI, you keep your data and model interactions within the secure, governed environment of your Google Cloud Platform project. This simplifies compliance and security management.
+
+Performance and Choice: You gain access to Google's state-of-the-art models like the Gemini family, which are known for their powerful reasoning capabilities, making them highly effective for complex text-to-SQL tasks.

@@ -319,3 +319,160 @@ Authentication: Vanna's VertexAI_Chat class is smart enough to automatically pic
 Security and Integration: By using Vertex AI, you keep your data and model interactions within the secure, governed environment of your Google Cloud Platform project. This simplifies compliance and security management.
 
 Performance and Choice: You gain access to Google's state-of-the-art models like the Gemini family, which are known for their powerful reasoning capabilities, making them highly effective for complex text-to-SQL tasks.
+
+
+
+----------
+
+
+Excellent. Using the VertexAI class within a corporate environment is the ideal approach. It ensures that your application leverages your company's existing Google Cloud Platform (GCP) infrastructure, adheres to security policies, and benefits from enterprise-grade scalability and management.
+
+When operating in a corporate setting, you typically move beyond local components like ChromaDB for the vector store. The best practice is to use an end-to-end GCP-native solution: Vertex AI for the LLM and Vertex AI Vector Search for the vector store.
+
+This guide will show you how to set up Vanna for this robust, production-ready corporate architecture.
+
+Key Differences in a Corporate Setup
+Authentication: Instead of logging in with your personal user account (gcloud auth application-default login), a deployed application should use a Service Account. This is a non-human account with specific IAM permissions, which is the standard for secure, automated processes.
+
+Vector Store: You will replace the local ChromaDB_VectorStore with vn.VertexAI_VectorStore. This uses the highly scalable and managed Vertex AI Vector Search (formerly Matching Engine) to store your trained metadata (DDLs, documentation, etc.).
+
+Step-by-Step Guide for a Corporate Environment
+Step 1: GCP Prerequisites and Setup
+You'll need to set this up in your Google Cloud project first.
+
+Enable APIs: Ensure Vertex AI API and Compute Engine API are enabled in your GCP project.
+
+Create a Service Account:
+
+Create a service account with the Vertex AI User role.
+
+Download the JSON key file for this service account. This key will be used to authenticate your application.
+
+Bash
+
+# Set your project ID
+gcloud config set project YOUR_GCP_PROJECT_ID
+
+# Create a service account
+gcloud iam service-accounts create vanna-sa --display-name="Vanna Service Account"
+
+# Grant it the necessary role
+gcloud projects add-iam-policy-binding YOUR_GCP_PROJECT_ID \
+  --member="serviceAccount:vanna-sa@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Create and download the key
+gcloud iam service-accounts keys create vanna-key.json \
+  --iam-account="vanna-sa@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com"
+Create a Vertex AI Vector Search Index: This is where Vanna will store the training data.
+
+Go to the Vertex AI -> Vector Search section in the Google Cloud Console.
+
+Create an index. For the dimensions, you can find the required value from Vanna's documentation for the model you are using (e.g., Gemini's textembedding-gecko model uses a dimension of 768).
+
+Note your Index ID and Region.
+
+Create an Index Endpoint and Deploy the Index:
+
+Create a public Index Endpoint.
+
+Deploy your newly created index to this endpoint.
+
+Note your Index Endpoint ID.
+
+Note: Creating and deploying an index can take 20-60 minutes.
+
+Step 2: Configure Your Python Environment
+Set Environment Variable: Point your environment to the downloaded service account key. This is how the Google Cloud libraries will authenticate automatically.
+
+Bash
+
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/vanna-key.json"
+Step 3: The Python Code with VertexAI class
+Now, you'll modify the MyVanna class to use both vn.VertexAI_Chat and vn.VertexAI_VectorStore.
+
+Python
+
+# 1. Installation
+!pip install vanna duckdb "google-cloud-aiplatform>=1.51"
+
+# 2. Import necessary libraries
+import vanna as vn
+import duckdb
+
+# 3. Set up Vanna for a Corporate GCP Environment
+class MyVannaCorporate(vn.VertexAI_VectorStore, vn.VertexAI_Chat):
+    def __init__(self, config=None):
+        # The config dictionary now holds all necessary GCP details.
+        # It's recommended to load these from environment variables or a secure config system.
+        
+        # Details for your Vertex AI Vector Search Index
+        self.project_id = "YOUR_GCP_PROJECT_ID"
+        self.region = "YOUR_GCP_REGION"  # e.g., "us-central1"
+        self.index_id = "YOUR_VECTOR_SEARCH_INDEX_ID"
+        self.index_endpoint_id = "YOUR_VECTOR_SEARCH_ENDPOINT_ID"
+        self.gcs_bucket_name = "YOUR_GCS_BUCKET_NAME" # A staging bucket for the index
+
+        # Details for the Vertex AI LLM (Gemini)
+        self.model_name = "gemini-1.5-flash-001" # Or gemini-1.0-pro, etc.
+
+        # Pass the full configuration to the parent classes
+        super().__init__(config={
+            'project_id': self.project_id,
+            'region': self.region,
+            'index_id': self.index_id,
+            'index_endpoint_id': self.index_endpoint_id,
+            'gcs_bucket_name': self.gcs_bucket_name,
+            'model': self.model_name,
+        })
+
+# Initialize the Vanna client
+vn_client = MyVannaCorporate()
+
+# All subsequent steps are IDENTICAL to the previous examples.
+# Vanna's interface remains consistent, you've just swapped the backend.
+
+# 4. Connect to your data source (e.g., DuckDB)
+con = duckdb.connect('my_database.duckdb')
+vn_client.connect_to_duckdb(con)
+
+# 5. Get DDL statements (assuming tables are already in the database)
+df_ddl = vn_client.run_sql("SELECT sql FROM sqlite_schema WHERE type='table'")
+ddl_statements = df_ddl['sql'].to_list()
+
+# 6. Train the Vanna AI model on the schemas and documentation
+# This will now store the vectors in your Vertex AI Vector Search index.
+print("Training Vanna with Vertex AI (LLM) and Vertex AI Vector Search (Vector Store)...")
+for ddl in ddl_statements:
+    vn_client.train(ddl=ddl)
+
+vn_client.train(documentation="The 'customers' table contains information about our clients.")
+vn_client.train(documentation="The 'products' table lists all available products and their prices.")
+print("Training complete.")
+
+# 7. Ask a question in natural language
+question = "What products did Alice buy and what was the total cost of her order?"
+print(f"\nAsking question: {question}")
+sql_query = vn_client.ask(question)
+
+# 8. Get the generated SQL and the results
+if sql_query:
+    print("\nGenerated SQL Query by Vertex AI:")
+    print(sql_query)
+    df_result = vn_client.run_sql(sql_query)
+    print("\nQuery Result:")
+    print(df_result)
+else:
+    print("\nSorry, I could not generate a SQL query for that question.")
+
+# 9. Close the database connection
+con.close()
+
+Advantages of This Corporate Architecture
+End-to-End Managed GCP Solution: You are using Google's infrastructure for both the language model and the vector database, ensuring seamless integration and support.
+
+Scalability & Performance: Vertex AI Vector Search is designed for low-latency retrieval over billions of vectors, ensuring your application remains fast as you add more training data.
+
+Enhanced Security: Authentication is handled by IAM service accounts. Data can be kept within your VPC Service Controls perimeter, and all interactions are logged in Google Cloud Audit Logs.
+
+Centralized Management: You can manage your models, vector indexes, and endpoints all from the central Vertex AI dashboard in the Google Cloud Console.

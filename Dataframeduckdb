@@ -20,13 +20,16 @@ for tbl, df in dfs:
 
 # ── 4. pull the schema for all user tables ────────────────────────────────────
 schema = con.execute("""
-    SELECT table_name   AS table,
-           column_name  AS column,
-           data_type
+    SELECT
+        table_name        AS tbl,          -- avoid the keyword
+        column_name       AS col,
+        data_type,
+        ordinal_position  AS ord
     FROM information_schema.columns
     WHERE table_schema = 'main'
-    ORDER BY table, ordinal_position
-""").fetchdf()                               # <- returns a pandas DataFrame
+    ORDER BY tbl, ord
+""").fetchdf()
+                               # <- returns a pandas DataFrame
 
 # ── 5. pretty-print ───────────────────────────────────────────────────────────
 for tbl, grp in schema.groupby("table", sort=False):

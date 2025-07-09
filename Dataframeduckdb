@@ -1,39 +1,35 @@
 import duckdb, pandas as pd
 
-# ── 1. Your list of dataframes ────────────────────────────────────────────────
-df_sales   = pd.DataFrame({"id":[1,2],"amount":[100.0,250.5],"ts":pd.to_datetime(["2025-07-08","2025-07-09"])})
-df_customers = pd.DataFrame({"cid":[10,11],"name":["Asha","Bruno"],"vip":[True,False]})
+# ── 1. your dataframes ────────────────────────────────────────────────────────
+df_sales   = pd.DataFrame({"id":[1,2], "amount":[100.0,250.5],
+                           "ts":pd.to_datetime(["2025-07-08","2025-07-09"])})
+df_customers = pd.DataFrame({"cid":[10,11], "name":["Asha","Bruno"], "vip":[True,False]})
 
 dfs = [("sales", df_sales),
-       ("customers", df_customers)]          # ← give each dataframe a target table name
+       ("customers", df_customers)]          # (table_name, dataframe)
 
-# ── 2. Open (or create) a DuckDB file ─────────────────────────────────────────
-con = duckdb.connect("my_data.duckdb")       # or ":memory:" for temp only
+# ── 2. open / create a DuckDB file ────────────────────────────────────────────
+con = duckdb.connect("my_data.duckdb")       # or ":memory:"
 
-# ── 3. Push every DataFrame into a persistent DuckDB table ────────────────────
+# ── 3. load every DataFrame → table ───────────────────────────────────────────
 for tbl, df in dfs:
-    # simplest: turn the DF into a temporary relation, then copy to a table
-    (duckdb
-     .from_df(df)                            # create relation
-     .create_or_replace_view(f"tmp_{tbl}"))  # view name avoids clashes
-    con.execute(f"CREATE OR REPLACE TABLE {tbl} AS SELECT * FROM tmp_{tbl}")
+    tmp = f"_tmp_{tbl}"                      # unique temp view name
+    con.register(tmp, df)                    # ① DF is now a view
+    con.execute(f"CREATE OR REPLACE TABLE {tbl} AS SELECT * FROM {tmp}")
+    con.unregister(tmp)                      # ② tidy up (optional)
 
-# ── 4. Pull the schema for *all* user tables in one query ─────────────────────
-schema_df = con.execute("""
-    SELECT
-        table_name                    AS table,
-        column_name                   AS column,
-        data_type,
-        ordinal_position AS col_order
+# ── 4. pull the schema for all user tables ────────────────────────────────────
+schema = con.execute("""
+    SELECT table_name   AS table,
+           column_name  AS column,
+           data_type
     FROM information_schema.columns
-    WHERE table_schema = 'main'       -- <- default schema for user objects
-    ORDER BY table, col_order
-""").df()
+    WHERE table_schema = 'main'
+    ORDER BY table, ordinal_position
+""").fetchdf()                               # <- returns a pandas DataFrame
 
-# ── 5. Show as plain text ─────────────────────────────────────────────────────
-for tbl, group in schema_df.groupby("table", sort=False):
+# ── 5. pretty-print ───────────────────────────────────────────────────────────
+for tbl, grp in schema.groupby("table", sort=False):
     print(f"\n=== {tbl} ===")
-    for _, row in group.iterrows():
+    for _, row in grp.iterrows():
         print(f"{row['column']:>20} : {row['data_type']}")
-
-# Optional: keep `schema_df` around if you prefer it in a DataFrame.

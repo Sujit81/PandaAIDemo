@@ -19,20 +19,21 @@ for tbl, df in dfs:
     con.unregister(tmp)                      # ② tidy up (optional)
 
 # ── 4. pull the schema for all user tables ────────────────────────────────────
+
 schema = con.execute("""
     SELECT
-        table_name        AS tbl,          -- avoid the keyword
-        column_name       AS col,
+        table_name       AS tbl,
+        column_name      AS col,
         data_type,
-        ordinal_position  AS ord
+        ordinal_position AS ord
     FROM information_schema.columns
     WHERE table_schema = 'main'
     ORDER BY tbl, ord
 """).fetchdf()
-                               # <- returns a pandas DataFrame
 
-# ── 5. pretty-print ───────────────────────────────────────────────────────────
-for tbl, grp in schema.groupby("table", sort=False):
+for tbl, grp in schema.groupby("tbl", sort=False):
     print(f"\n=== {tbl} ===")
     for _, row in grp.iterrows():
-        print(f"{row['column']:>20} : {row['data_type']}")
+        print(f"{row['col']:>20} : {row['data_type']}")
+
+

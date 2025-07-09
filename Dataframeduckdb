@@ -37,3 +37,25 @@ for tbl, grp in schema.groupby("tbl", sort=False):
         print(f"{row['col']:>20} : {row['data_type']}")
 
 
+from collections import defaultdict
+import textwrap
+
+# ---- 1. Collect columns per table ------------------------------------------
+cols_by_table = defaultdict(list)
+for _, row in schema.iterrows():
+    tbl  = row['table_name']
+    col  = row['column_name']
+    typ  = row['data_type']
+    cols_by_table[tbl].append(f'    "{col}" {typ}')  # quoted col names = safe
+
+# ---- 2. Emit CREATE statements ---------------------------------------------
+for tbl, cols in cols_by_table.items():
+    ddl = textwrap.dedent(f"""
+        CREATE TABLE "{tbl}" (
+    {',\n'.join(cols)}
+        );
+    """).strip()
+    print(ddl, end="\n\n")
+
+
+

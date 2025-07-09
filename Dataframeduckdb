@@ -58,4 +58,45 @@ for tbl, cols in cols_by_table.items():
     print(ddl, end="\n\n")
 
 
+import duckdb, textwrap, pandas as pd
+from collections import defaultdict
+
+###############################################################################
+# 1.  Connect and capture the catalog  ────────────────────────────────────────
+###############################################################################
+con = duckdb.connect("my_data.duckdb")          # or ":memory:"
+
+schema = con.execute("""
+    SELECT table_name, column_name, data_type, ordinal_position
+    FROM information_schema.columns
+    WHERE table_schema = 'main'
+    ORDER BY table_name, ordinal_position
+""").fetchdf()
+
+###############################################################################
+# 2.  Build CREATE statements with tidy formatting  ───────────────────────────
+###############################################################################
+cols_by_table = defaultdict(list)
+for _, row in schema.iterrows():
+    cols_by_table[row.table_name].append(          # gather cols in load order
+        f'    "{row.column_name}" {row.data_type}'
+    )
+
+ddl_list = []
+for tbl, cols in cols_by_table.items():
+    ddl = textwrap.dedent(f"""
+        CREATE TABLE IF NOT EXISTS "{tbl}" (
+    {',\n'.join(cols)}
+        );
+    """).strip()
+    ddl_list.append(ddl)
+
+###############################################################################
+# 3.  One long string containing *all* schemas  ───────────────────────────────
+###############################################################################
+all_ddl = "\n\n".join(ddl_list)                 # <— single text blob
+print(all_ddl)                                  # sanity-check
+
+
+
 

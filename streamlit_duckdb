@@ -1,0 +1,37 @@
+import streamlit as st
+import duckdb
+import pandas as pd
+import os
+
+st.set_page_config(page_title="DuckDB Query Tool", layout="wide")
+
+st.title("🦆 DuckDB Query Interface")
+
+# File input
+db_path = st.text_input("Enter path to DuckDB file", value="mydb.duckdb")
+
+if db_path:
+    if not os.path.exists(db_path):
+        st.error(f"File not found: {db_path}")
+    else:
+        try:
+            con = duckdb.connect(database=db_path, read_only=False)
+            st.success(f"Connected to: {db_path}")
+
+            # Query input
+            query = st.text_area("Enter SQL Query", height=150)
+
+            if st.button("Execute Query"):
+                try:
+                    df = con.execute(query).fetchdf()
+                    st.dataframe(df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Query failed: {str(e)}")
+
+            con.close()
+        except Exception as e:
+            st.error(f"Could not connect to DB: {str(e)}")
+else:
+    st.info("Please enter a valid DuckDB file path.")
+
+streamlit run app.py --server.port 8502    

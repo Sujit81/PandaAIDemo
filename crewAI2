@@ -1,0 +1,499 @@
+"""
+Natural Language to SQL Agentic System using CrewAI
+This system processes natural language queries, converts them to SQL,
+and executes various operations using a multi-agent architecture.
+"""
+
+import json
+import pandas as pd
+from typing import Dict, List, Any, Optional, Tuple
+import duckdb
+from sqlalchemy import create_engine, inspect, MetaData, Table, Column, String, Integer, Float, DateTime
+from sqlalchemy.orm import sessionmaker
+import google.generativeai as genai
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import BytesIO
+import base64
+import traceback
+import time
+from datetime import datetime
+import logging
+from functools import wraps
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration
+class Config:
+    GEMINI_API_KEY = "your-gemini-api-key"
+    DUCKDB_PATH = "data_warehouse.duckdb"
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1  # seconds
+
+# Initialize Gemini
+genai.configure(api_key=Config.GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel('gemini-1.5-pro')
+
+# Retry decorator
+def retry_on_error(max_retries=Config.MAX_RETRIES, delay=Config.RETRY_DELAY):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"All {max_retries} attempts failed")
+            raise last_exception
+        return wrapper
+    return decorator
+
+# Database Manager
+class DatabaseManager:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.engine = create_engine(f'duckdb:///{db_path}')
+        self.metadata = MetaData()
+        
+    def insert_dataframes(self, dataframes: Dict[str, pd.DataFrame], metadata_json: Dict[str, Any]):
+        """Insert dataframes into DuckDB"""
+        with self.engine.connect() as conn:
+            for table_name, df in dataframes.items():
+                # Clean column names
+                df.columns = [col.replace(' ', '_').lower() for col in df.columns]
+                
+                # Insert data
+                df.to_sql(table_name, conn, if_exists='replace', index=False)
+                logger.info(f"Inserted table: {table_name} with {len(df)} rows")
+    
+    def get_all_schemas(self) -> Dict[str, List[Dict[str, str]]]:
+        """Get schemas of all tables"""
+        inspector = inspect(self.engine)
+        schemas = {}
+        
+        for table_name in inspector.get_table_names():
+            columns = []
+            for col in inspector.get_columns(table_name):
+                columns.append({
+                    'name': col['name'],
+                    'type': str(col['type'])
+                })
+            schemas[table_name] = columns
+            
+        return schemas
+    
+    @retry_on_error()
+    def execute_query(self, query: str) -> pd.DataFrame:
+        """Execute SQL query and return results as DataFrame"""
+        with self.engine.connect() as conn:
+            return pd.read_sql(query, conn)
+
+# Tool definitions for CrewAI agents
+class ExecuteQueryTool(BaseTool):
+    name: str = "execute_query"
+    description: str = "Execute SQL query on DuckDB and return results"
+    
+    def __init__(self, db_manager: DatabaseManager):
+        super().__init__()
+        self.db_manager = db_manager
+    
+    def _run(self, query: str) -> Dict[str, Any]:
+        try:
+            result_df = self.db_manager.execute_query(query)
+            return {
+                "status": "success",
+                "data": result_df.to_dict('records'),
+                "row_count": len(result_df),
+                "columns": list(result_df.columns)
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+
+class ChartDataframeTool(BaseTool):
+    name: str = "chart_dataframe"
+    description: str = "Create charts from dataframe results"
+    
+    def _run(self, data: Dict[str, Any], chart_type: str = "bar", **kwargs) -> Dict[str, Any]:
+        try:
+            df = pd.DataFrame(data['data'])
+            
+            plt.figure(figsize=(10, 6))
+            
+            if chart_type == "bar" and len(df.columns) >= 2:
+                df.plot(x=df.columns[0], y=df.columns[1], kind='bar')
+            elif chart_type == "line" and len(df.columns) >= 2:
+                df.plot(x=df.columns[0], y=df.columns[1], kind='line')
+            elif chart_type == "scatter" and len(df.columns) >= 2:
+                plt.scatter(df[df.columns[0]], df[df.columns[1]])
+                plt.xlabel(df.columns[0])
+                plt.ylabel(df.columns[1])
+            elif chart_type == "pie" and len(df.columns) >= 2:
+                df.set_index(df.columns[0])[df.columns[1]].plot(kind='pie')
+            else:
+                # Default to showing first few rows as table
+                fig, ax = plt.subplots()
+                ax.axis('tight')
+                ax.axis('off')
+                table = ax.table(cellText=df.head(10).values,
+                               colLabels=df.columns,
+                               cellLoc='center',
+                               loc='center')
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+            
+            plt.title(kwargs.get('title', 'Data Visualization'))
+            plt.tight_layout()
+            
+            # Convert to base64
+            buffer = BytesIO()
+            plt.savefig(buffer, format='png')
+            buffer.seek(0)
+            image_base64 = base64.b64encode(buffer.read()).decode()
+            plt.close()
+            
+            return {
+                "status": "success",
+                "chart_type": chart_type,
+                "image_base64": image_base64
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+
+class SummarizeContentTool(BaseTool):
+    name: str = "summarize_content"
+    description: str = "Summarize query results using LLM"
+    
+    def _run(self, data: Dict[str, Any], query_context: str = "") -> str:
+        try:
+            df = pd.DataFrame(data['data'])
+            
+            # Prepare summary prompt
+            prompt = f"""
+            Summarize the following query results:
+            
+            Query Context: {query_context}
+            
+            Data Overview:
+            - Total rows: {len(df)}
+            - Columns: {', '.join(df.columns)}
+            
+            Sample data (first 5 rows):
+            {df.head().to_string()}
+            
+            Statistical Summary:
+            {df.describe().to_string() if not df.empty else "No numerical data"}
+            
+            Please provide a concise, insightful summary of the results.
+            """
+            
+            response = gemini_model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            return f"Error in summarization: {str(e)}"
+
+# SQL Generation with Gemini
+class SQLGenerator:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+        
+    @retry_on_error()
+    def generate_sql(self, natural_query: str, metadata: Dict[str, Any], schemas: Dict[str, List[Dict[str, str]]]) -> Dict[str, Any]:
+        """Generate SQL query from natural language using Gemini"""
+        
+        # Prepare schema information
+        schema_info = ""
+        for table_name, columns in schemas.items():
+            schema_info += f"\nTable: {table_name}\n"
+            schema_info += "Columns:\n"
+            for col in columns:
+                schema_info += f"  - {col['name']} ({col['type']})\n"
+        
+        # Prepare metadata information
+        metadata_info = json.dumps(metadata, indent=2)
+        
+        prompt = f"""
+        You are a SQL expert. Convert the following natural language query to SQL for DuckDB.
+        
+        Natural Language Query: {natural_query}
+        
+        Database Schema:
+        {schema_info}
+        
+        Table Metadata and Dependencies:
+        {metadata_info}
+        
+        Generate a response in the following JSON format:
+        {{
+            "sql_query": "the SQL query",
+            "explanation": "brief explanation of the query",
+            "suggested_actions": [
+                {{
+                    "action": "execute_query",
+                    "params": {{}}
+                }},
+                {{
+                    "action": "chart_dataframe", 
+                    "params": {{"chart_type": "bar"}}
+                }},
+                {{
+                    "action": "summarize_content",
+                    "params": {{}}
+                }}
+            ]
+        }}
+        
+        Important:
+        - Use proper DuckDB SQL syntax
+        - Include appropriate JOINs based on table dependencies
+        - Suggest appropriate visualization if data is suitable for charts
+        - Only suggest summarize_content for complex results
+        """
+        
+        response = gemini_model.generate_content(prompt)
+        
+        # Parse response
+        try:
+            # Extract JSON from response
+            response_text = response.text
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}') + 1
+            json_str = response_text[start_idx:end_idx]
+            
+            return json.loads(json_str)
+        except:
+            # Fallback parsing
+            return {
+                "sql_query": response.text,
+                "explanation": "Generated SQL query",
+                "suggested_actions": [{"action": "execute_query", "params": {}}]
+            }
+
+# CrewAI Agents
+class NLToSQLCrew:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+        self.sql_generator = SQLGenerator(db_manager)
+        self.execute_tool = ExecuteQueryTool(db_manager)
+        self.chart_tool = ChartDataframeTool()
+        self.summarize_tool = SummarizeContentTool()
+        
+    def create_agents(self):
+        # SQL Generator Agent (uses LLM)
+        self.sql_agent = Agent(
+            role="SQL Query Generator",
+            goal="Convert natural language queries to SQL",
+            backstory="Expert in database schemas and SQL generation",
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        # Query Executor Agent (no LLM)
+        self.executor_agent = Agent(
+            role="Query Executor",
+            goal="Execute SQL queries efficiently",
+            backstory="Database execution specialist",
+            tools=[self.execute_tool],
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        # Visualization Agent (no LLM)
+        self.viz_agent = Agent(
+            role="Data Visualizer",
+            goal="Create meaningful visualizations from data",
+            backstory="Data visualization expert",
+            tools=[self.chart_tool],
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        # Summarizer Agent (uses LLM)
+        self.summarizer_agent = Agent(
+            role="Results Summarizer",
+            goal="Provide insightful summaries of query results",
+            backstory="Data analyst with strong communication skills",
+            tools=[self.summarize_tool],
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        # Orchestrator Agent
+        self.orchestrator_agent = Agent(
+            role="Workflow Orchestrator",
+            goal="Coordinate the execution of tasks based on the execution plan",
+            backstory="Expert in workflow management and task coordination",
+            verbose=True,
+            allow_delegation=True
+        )
+    
+    def process_query(self, natural_query: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Process natural language query through the agent pipeline"""
+        
+        # Get schemas
+        schemas = self.db_manager.get_all_schemas()
+        
+        # Create agents
+        self.create_agents()
+        
+        # Generate SQL and execution plan
+        sql_result = self.sql_generator.generate_sql(natural_query, metadata, schemas)
+        
+        # Define tasks based on suggested actions
+        tasks = []
+        results = {
+            "query": natural_query,
+            "sql": sql_result["sql_query"],
+            "explanation": sql_result["explanation"],
+            "execution_results": []
+        }
+        
+        # Task 1: Execute Query
+        execute_task = Task(
+            description=f"Execute the SQL query: {sql_result['sql_query']}",
+            agent=self.executor_agent,
+            expected_output="Query execution results"
+        )
+        tasks.append(execute_task)
+        
+        # Add additional tasks based on suggested actions
+        for action in sql_result.get("suggested_actions", []):
+            if action["action"] == "chart_dataframe":
+                viz_task = Task(
+                    description=f"Create a {action['params'].get('chart_type', 'bar')} chart from the query results",
+                    agent=self.viz_agent,
+                    expected_output="Visualization created",
+                    context=[execute_task]
+                )
+                tasks.append(viz_task)
+                
+            elif action["action"] == "summarize_content":
+                summary_task = Task(
+                    description=f"Summarize the query results in context of: {natural_query}",
+                    agent=self.summarizer_agent,
+                    expected_output="Summary of results",
+                    context=[execute_task]
+                )
+                tasks.append(summary_task)
+        
+        # Create and run crew
+        crew = Crew(
+            agents=[self.sql_agent, self.executor_agent, self.viz_agent, 
+                   self.summarizer_agent, self.orchestrator_agent],
+            tasks=tasks,
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        try:
+            crew_output = crew.kickoff()
+            results["execution_results"] = crew_output
+            results["status"] = "success"
+        except Exception as e:
+            results["status"] = "error"
+            results["error"] = str(e)
+            logger.error(f"Crew execution failed: {str(e)}")
+        
+        return results
+
+# Main Application Class
+class NaturalLanguageQuerySystem:
+    def __init__(self, db_path: str = Config.DUCKDB_PATH):
+        self.db_manager = DatabaseManager(db_path)
+        self.crew_system = NLToSQLCrew(self.db_manager)
+        
+    def load_data(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict[str, Any]):
+        """Load data into the system"""
+        self.db_manager.insert_dataframes(dataframes, metadata)
+        self.metadata = metadata
+        
+    def query(self, natural_language_query: str) -> Dict[str, Any]:
+        """Process a natural language query"""
+        return self.crew_system.process_query(natural_language_query, self.metadata)
+
+# Example usage and testing
+def example_usage():
+    # Sample metadata
+    metadata = {
+        "tables": {
+            "sales": {
+                "description": "Sales transactions data",
+                "dependencies": ["products", "customers"]
+            },
+            "products": {
+                "description": "Product catalog",
+                "dependencies": []
+            },
+            "customers": {
+                "description": "Customer information",
+                "dependencies": []
+            }
+        }
+    }
+    
+    # Sample dataframes
+    dataframes = {
+        "products": pd.DataFrame({
+            "product_id": [1, 2, 3, 4, 5],
+            "product_name": ["Laptop", "Mouse", "Keyboard", "Monitor", "Headphones"],
+            "price": [999.99, 29.99, 79.99, 299.99, 149.99]
+        }),
+        "customers": pd.DataFrame({
+            "customer_id": [1, 2, 3],
+            "customer_name": ["John Doe", "Jane Smith", "Bob Johnson"],
+            "city": ["New York", "Los Angeles", "Chicago"]
+        }),
+        "sales": pd.DataFrame({
+            "sale_id": range(1, 11),
+            "product_id": [1, 2, 1, 3, 4, 5, 2, 3, 1, 4],
+            "customer_id": [1, 2, 3, 1, 2, 3, 1, 2, 3, 1],
+            "quantity": [1, 2, 1, 1, 1, 2, 3, 1, 1, 1],
+            "sale_date": pd.date_range("2024-01-01", periods=10, freq="D")
+        })
+    }
+    
+    # Initialize system
+    system = NaturalLanguageQuerySystem()
+    
+    # Load data
+    system.load_data(dataframes, metadata)
+    
+    # Example queries
+    queries = [
+        "Show me total sales by product",
+        "Which customer bought the most expensive items?",
+        "Create a chart showing sales trends over time",
+        "Summarize the sales performance by city"
+    ]
+    
+    for query in queries:
+        print(f"\nProcessing query: {query}")
+        print("-" * 50)
+        result = system.query(query)
+        print(f"Status: {result['status']}")
+        if result['status'] == 'success':
+            print(f"SQL: {result['sql']}")
+            print(f"Explanation: {result['explanation']}")
+        else:
+            print(f"Error: {result.get('error', 'Unknown error')}")
+
+if __name__ == "__main__":
+    example_usage()

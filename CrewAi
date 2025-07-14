@@ -1,0 +1,539 @@
+# Agentic Database Query System with CrewAI
+# This system handles natural language queries, converts them to SQL, and executes various operations
+
+import json
+import logging
+import traceback
+from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
+import pandas as pd
+import duckdb
+from sqlalchemy import create_engine, MetaData, inspect, text
+from sqlalchemy.orm import sessionmaker
+import matplotlib.pyplot as plt
+import seaborn as sns
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import tool
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+import io
+import base64
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration
+class Config:
+    GEMINI_API_KEY = "your_gemini_api_key_here"
+    MAX_RETRIES = 3
+    DB_CONNECTION_STRING = "duckdb:///data.db"
+
+# Initialize Gemini
+genai.configure(api_key=Config.GEMINI_API_KEY)
+
+# Data Models
+class ActionType(Enum):
+    EXECUTE_QUERY = "execute_query"
+    CHART_DATAFRAME = "chart_dataframe"
+    SUMMARIZE_CONTENT = "summarize_content"
+    PROCESS_WITH_LLM = "process_with_llm"
+
+@dataclass
+class AgentStep:
+    action: ActionType
+    parameters: Dict[str, Any]
+    description: str
+
+class SQLQueryResponse(BaseModel):
+    sql_query: str = Field(description="The SQL query to execute")
+    steps: List[Dict[str, Any]] = Field(description="List of agent steps to execute")
+    explanation: str = Field(description="Explanation of the query and steps")
+
+class ChartConfig(BaseModel):
+    chart_type: str = Field(description="Type of chart (bar, line, pie, scatter, etc.)")
+    x_column: Optional[str] = Field(description="Column for x-axis")
+    y_column: Optional[str] = Field(description="Column for y-axis")
+    title: str = Field(description="Chart title")
+    additional_params: Dict[str, Any] = Field(default_factory=dict)
+
+# Database Manager
+class DatabaseManager:
+    def __init__(self, connection_string: str = Config.DB_CONNECTION_STRING):
+        self.connection_string = connection_string
+        self.engine = create_engine(connection_string)
+        self.Session = sessionmaker(bind=self.engine)
+        self.metadata = MetaData()
+        
+    def insert_dataframes(self, dataframes: Dict[str, pd.DataFrame], table_metadata: Dict[str, Any]):
+        """Insert dataframes into DuckDB using SQLAlchemy"""
+        try:
+            with self.Session() as session:
+                for table_name, df in dataframes.items():
+                    # Insert dataframe to database
+                    df.to_sql(table_name, self.engine, if_exists='replace', index=False)
+                    logger.info(f"Inserted {len(df)} rows into table {table_name}")
+                
+                session.commit()
+                logger.info("Successfully inserted all dataframes")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error inserting dataframes: {str(e)}")
+            return False
+    
+    def get_table_schemas(self) -> Dict[str, Any]:
+        """Get all table schemas using SQLAlchemy inspector"""
+        try:
+            inspector = inspect(self.engine)
+            schemas = {}
+            
+            for table_name in inspector.get_table_names():
+                columns = inspector.get_columns(table_name)
+                schemas[table_name] = {
+                    'columns': [
+                        {
+                            'name': col['name'],
+                            'type': str(col['type']),
+                            'nullable': col.get('nullable', True),
+                            'default': col.get('default')
+                        }
+                        for col in columns
+                    ]
+                }
+            
+            return schemas
+            
+        except Exception as e:
+            logger.error(f"Error getting table schemas: {str(e)}")
+            return {}
+    
+    def execute_query(self, query: str) -> pd.DataFrame:
+        """Execute SQL query and return results as DataFrame"""
+        try:
+            with self.Session() as session:
+                result = session.execute(text(query))
+                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                return df
+                
+        except Exception as e:
+            logger.error(f"Error executing query: {str(e)}")
+            raise
+
+# LLM Service
+class LLMService:
+    def __init__(self):
+        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    
+    def generate_sql_query(self, natural_query: str, table_schemas: Dict[str, Any], 
+                          metadata: Dict[str, Any]) -> SQLQueryResponse:
+        """Generate SQL query and agent steps from natural language"""
+        
+        prompt = f"""
+        You are an expert SQL analyst. Given a natural language query, table schemas, and metadata,
+        generate a SQL query and determine the appropriate agent steps to execute.
+        
+        Natural Language Query: {natural_query}
+        
+        Table Schemas:
+        {json.dumps(table_schemas, indent=2)}
+        
+        Metadata:
+        {json.dumps(metadata, indent=2)}
+        
+        You must respond with a JSON object containing:
+        1. sql_query: The SQL query to execute
+        2. steps: List of steps with action type and parameters
+        3. explanation: Brief explanation of the query and steps
+        
+        Available action types:
+        - execute_query: Execute SQL query (no LLM needed)
+        - chart_dataframe: Create charts from dataframe (no LLM needed)
+        - summarize_content: Summarize results using LLM
+        - process_with_llm: For complex operations requiring LLM
+        
+        Example steps format:
+        [
+            {{"action": "execute_query", "parameters": {{"query": "SELECT * FROM table1"}}, "description": "Execute main query"}},
+            {{"action": "chart_dataframe", "parameters": {{"chart_type": "bar", "x_column": "category", "y_column": "value", "title": "Sales by Category"}}, "description": "Create bar chart"}},
+            {{"action": "summarize_content", "parameters": {{"content_type": "query_results"}}, "description": "Summarize the findings"}}
+        ]
+        
+        Return only valid JSON without any markdown formatting.
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            # Clean up response if it contains markdown
+            if response_text.startswith('```json'):
+                response_text = response_text[7:-3]
+            elif response_text.startswith('```'):
+                response_text = response_text[3:-3]
+            
+            response_data = json.loads(response_text)
+            return SQLQueryResponse(**response_data)
+            
+        except Exception as e:
+            logger.error(f"Error generating SQL query: {str(e)}")
+            raise
+    
+    def summarize_content(self, content: str, context: str = "") -> str:
+        """Summarize content using LLM"""
+        prompt = f"""
+        Summarize the following content in a clear and concise manner:
+        
+        Context: {context}
+        
+        Content:
+        {content}
+        
+        Provide a brief, informative summary highlighting key insights and findings.
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text.strip()
+            
+        except Exception as e:
+            logger.error(f"Error summarizing content: {str(e)}")
+            raise
+
+# Chart Generator
+class ChartGenerator:
+    @staticmethod
+    def create_chart(df: pd.DataFrame, chart_config: ChartConfig) -> str:
+        """Create chart from dataframe and return base64 encoded image"""
+        try:
+            plt.figure(figsize=(10, 6))
+            
+            if chart_config.chart_type == "bar":
+                plt.bar(df[chart_config.x_column], df[chart_config.y_column])
+            elif chart_config.chart_type == "line":
+                plt.plot(df[chart_config.x_column], df[chart_config.y_column])
+            elif chart_config.chart_type == "scatter":
+                plt.scatter(df[chart_config.x_column], df[chart_config.y_column])
+            elif chart_config.chart_type == "pie":
+                plt.pie(df[chart_config.y_column], labels=df[chart_config.x_column])
+            else:
+                # Default to bar chart
+                plt.bar(df[chart_config.x_column], df[chart_config.y_column])
+            
+            plt.title(chart_config.title)
+            plt.xlabel(chart_config.x_column or "")
+            plt.ylabel(chart_config.y_column or "")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            
+            # Save to base64
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png')
+            buffer.seek(0)
+            chart_base64 = base64.b64encode(buffer.getvalue()).decode()
+            plt.close()
+            
+            return chart_base64
+            
+        except Exception as e:
+            logger.error(f"Error creating chart: {str(e)}")
+            raise
+
+# CrewAI Tools
+@tool
+def execute_sql_query(query: str, db_manager: DatabaseManager) -> pd.DataFrame:
+    """Execute SQL query and return results"""
+    return db_manager.execute_query(query)
+
+@tool
+def create_chart(df_json: str, chart_config_json: str) -> str:
+    """Create chart from dataframe"""
+    df = pd.read_json(df_json)
+    chart_config = ChartConfig(**json.loads(chart_config_json))
+    return ChartGenerator.create_chart(df, chart_config)
+
+@tool
+def summarize_with_llm(content: str, context: str, llm_service: LLMService) -> str:
+    """Summarize content using LLM"""
+    return llm_service.summarize_content(content, context)
+
+# CrewAI Agents
+class QueryAgents:
+    def __init__(self, db_manager: DatabaseManager, llm_service: LLMService):
+        self.db_manager = db_manager
+        self.llm_service = llm_service
+    
+    def create_sql_agent(self) -> Agent:
+        """Agent responsible for SQL query generation"""
+        return Agent(
+            role="SQL Query Generator",
+            goal="Generate SQL queries from natural language and determine execution steps",
+            backstory="You are an expert SQL analyst who can convert natural language queries into SQL and determine the appropriate execution steps.",
+            tools=[],
+            verbose=True
+        )
+    
+    def create_execution_agent(self) -> Agent:
+        """Agent responsible for executing queries and operations"""
+        return Agent(
+            role="Query Executor",
+            goal="Execute SQL queries and perform data operations",
+            backstory="You are responsible for executing SQL queries and performing data operations like creating charts.",
+            tools=[execute_sql_query, create_chart],
+            verbose=True
+        )
+    
+    def create_analysis_agent(self) -> Agent:
+        """Agent responsible for analysis and summarization"""
+        return Agent(
+            role="Data Analyst",
+            goal="Analyze query results and provide insights",
+            backstory="You are a data analyst who can summarize findings and provide insights from query results.",
+            tools=[summarize_with_llm],
+            verbose=True
+        )
+
+# Main Agentic System
+class AgenticQuerySystem:
+    def __init__(self, connection_string: str = Config.DB_CONNECTION_STRING):
+        self.db_manager = DatabaseManager(connection_string)
+        self.llm_service = LLMService()
+        self.chart_generator = ChartGenerator()
+        self.agents = QueryAgents(self.db_manager, self.llm_service)
+        
+    def setup_database(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict[str, Any]):
+        """Setup database with dataframes and metadata"""
+        return self.db_manager.insert_dataframes(dataframes, metadata)
+    
+    def get_table_schemas(self) -> Dict[str, Any]:
+        """Get all table schemas"""
+        return self.db_manager.get_table_schemas()
+    
+    def process_query(self, natural_query: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Process natural language query through the agentic system"""
+        
+        for attempt in range(Config.MAX_RETRIES):
+            try:
+                logger.info(f"Processing query (attempt {attempt + 1}): {natural_query}")
+                
+                # Get table schemas
+                table_schemas = self.get_table_schemas()
+                
+                # Generate SQL query and steps using LLM
+                sql_response = self.llm_service.generate_sql_query(
+                    natural_query, table_schemas, metadata
+                )
+                
+                # Create CrewAI agents
+                sql_agent = self.agents.create_sql_agent()
+                execution_agent = self.agents.create_execution_agent()
+                analysis_agent = self.agents.create_analysis_agent()
+                
+                # Create tasks
+                tasks = []
+                results = {}
+                
+                # Execute steps
+                for i, step in enumerate(sql_response.steps):
+                    action_type = ActionType(step['action'])
+                    parameters = step['parameters']
+                    
+                    if action_type == ActionType.EXECUTE_QUERY:
+                        # Execute SQL query without LLM
+                        query = parameters.get('query', sql_response.sql_query)
+                        result_df = self.db_manager.execute_query(query)
+                        results[f'query_result_{i}'] = result_df
+                        
+                    elif action_type == ActionType.CHART_DATAFRAME:
+                        # Create chart without LLM
+                        if f'query_result_{i-1}' in results:
+                            df = results[f'query_result_{i-1}']
+                            chart_config = ChartConfig(**parameters)
+                            chart_base64 = self.chart_generator.create_chart(df, chart_config)
+                            results[f'chart_{i}'] = chart_base64
+                        
+                    elif action_type == ActionType.SUMMARIZE_CONTENT:
+                        # Use LLM for summarization
+                        content_key = parameters.get('content_key', f'query_result_{i-1}')
+                        if content_key in results:
+                            content = str(results[content_key])
+                            summary = self.llm_service.summarize_content(
+                                content, f"Query: {natural_query}"
+                            )
+                            results[f'summary_{i}'] = summary
+                    
+                    elif action_type == ActionType.PROCESS_WITH_LLM:
+                        # Complex LLM processing
+                        # This would be implemented based on specific requirements
+                        pass
+                
+                # Prepare final response
+                final_response = {
+                    'success': True,
+                    'sql_query': sql_response.sql_query,
+                    'explanation': sql_response.explanation,
+                    'results': results,
+                    'steps_executed': len(sql_response.steps)
+                }
+                
+                logger.info(f"Successfully processed query in {attempt + 1} attempts")
+                return final_response
+                
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == Config.MAX_RETRIES - 1:
+                    return {
+                        'success': False,
+                        'error': str(e),
+                        'attempts': Config.MAX_RETRIES,
+                        'traceback': traceback.format_exc()
+                    }
+                continue
+    
+    def run_crew_analysis(self, natural_query: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Run full CrewAI analysis workflow"""
+        
+        # Get table schemas
+        table_schemas = self.get_table_schemas()
+        
+        # Create agents
+        sql_agent = self.agents.create_sql_agent()
+        execution_agent = self.agents.create_execution_agent()
+        analysis_agent = self.agents.create_analysis_agent()
+        
+        # Create tasks
+        sql_task = Task(
+            description=f"""
+            Generate SQL query and execution steps for: {natural_query}
+            
+            Table Schemas: {json.dumps(table_schemas, indent=2)}
+            Metadata: {json.dumps(metadata, indent=2)}
+            
+            Return SQL query and list of execution steps.
+            """,
+            agent=sql_agent,
+            expected_output="SQL query and execution steps"
+        )
+        
+        execution_task = Task(
+            description="Execute the SQL query and perform data operations",
+            agent=execution_agent,
+            expected_output="Query results and any charts created"
+        )
+        
+        analysis_task = Task(
+            description="Analyze results and provide insights",
+            agent=analysis_agent,
+            expected_output="Analysis summary and insights"
+        )
+        
+        # Create and run crew
+        crew = Crew(
+            agents=[sql_agent, execution_agent, analysis_agent],
+            tasks=[sql_task, execution_task, analysis_task],
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        try:
+            result = crew.kickoff()
+            return {
+                'success': True,
+                'result': result,
+                'crew_output': str(result)
+            }
+        except Exception as e:
+            logger.error(f"CrewAI execution failed: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+
+# Example usage and testing
+def example_usage():
+    """Example of how to use the agentic system"""
+    
+    # Sample metadata
+    metadata = {
+        "tables": {
+            "sales": {
+                "dependencies": ["products", "customers"],
+                "description": "Sales transaction data"
+            },
+            "products": {
+                "dependencies": [],
+                "description": "Product catalog"
+            },
+            "customers": {
+                "dependencies": [],
+                "description": "Customer information"
+            }
+        }
+    }
+    
+    # Sample dataframes
+    dataframes = {
+        "sales": pd.DataFrame({
+            "id": [1, 2, 3, 4, 5],
+            "product_id": [101, 102, 101, 103, 102],
+            "customer_id": [1, 2, 3, 1, 2],
+            "amount": [100.0, 150.0, 80.0, 200.0, 120.0],
+            "date": ["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-04", "2025-01-05"]
+        }),
+        "products": pd.DataFrame({
+            "id": [101, 102, 103],
+            "name": ["Widget A", "Widget B", "Widget C"],
+            "price": [50.0, 75.0, 100.0],
+            "category": ["Electronics", "Electronics", "Home"]
+        }),
+        "customers": pd.DataFrame({
+            "id": [1, 2, 3],
+            "name": ["John Doe", "Jane Smith", "Bob Johnson"],
+            "email": ["john@example.com", "jane@example.com", "bob@example.com"]
+        })
+    }
+    
+    # Initialize system
+    system = AgenticQuerySystem()
+    
+    # Setup database
+    success = system.setup_database(dataframes, metadata)
+    if not success:
+        print("Failed to setup database")
+        return
+    
+    # Process queries
+    queries = [
+        "Show me the total sales by product category",
+        "Create a bar chart showing sales by customer",
+        "What were the top selling products last month and provide a summary"
+    ]
+    
+    for query in queries:
+        print(f"\n{'='*60}")
+        print(f"Processing Query: {query}")
+        print(f"{'='*60}")
+        
+        result = system.process_query(query, metadata)
+        
+        if result['success']:
+            print("✅ Query processed successfully!")
+            print(f"SQL Query: {result['sql_query']}")
+            print(f"Explanation: {result['explanation']}")
+            print(f"Steps executed: {result['steps_executed']}")
+            
+            # Print results
+            for key, value in result['results'].items():
+                print(f"\n{key}:")
+                if isinstance(value, pd.DataFrame):
+                    print(value.head())
+                else:
+                    print(str(value)[:200] + "..." if len(str(value)) > 200 else str(value))
+        else:
+            print("❌ Query failed!")
+            print(f"Error: {result['error']}")
+
+if __name__ == "__main__":
+    example_usage()

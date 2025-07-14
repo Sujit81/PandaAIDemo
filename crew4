@@ -1,0 +1,337 @@
+"""
+Minimal Working Example for Natural Language to SQL System
+This version focuses on getting the basic functionality working
+"""
+
+import json
+import pandas as pd
+from typing import Dict, Any
+import duckdb
+import google.generativeai as genai
+from crewai import Agent, Task, Crew, Process
+
+# Simple configuration
+GEMINI_API_KEY = "your-gemini-api-key"
+DB_CONNECTION = None
+
+# Initialize Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel('gemini-1.5-pro')
+
+# Initialize DuckDB connection
+def init_duckdb():
+    """Initialize DuckDB connection"""
+    global DB_CONNECTION
+    DB_CONNECTION = duckdb.connect(':memory:')
+    return DB_CONNECTION
+
+# Simple tool functions that return strings
+def execute_query(query: str) -> str:
+    """Execute SQL query and return results as string"""
+    global DB_CONNECTION
+    try:
+        result = DB_CONNECTION.execute(query).fetchall()
+        columns = [desc[0] for desc in DB_CONNECTION.description]
+        
+        # Convert to simple format
+        data = []
+        for row in result:
+            data.append(dict(zip(columns, row)))
+        
+        return json.dumps({
+            "status": "success",
+            "data": data,
+            "row_count": len(data)
+        })
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "error": str(e)
+        })
+
+def create_chart_from_data(data_str: str, chart_type: str = "bar") -> str:
+    """Create a simple text representation of a chart"""
+    try:
+        data = json.loads(data_str)
+        
+        if data.get("status") == "error":
+            return "Cannot create chart from error result"
+        
+        rows = data.get("data", [])
+        if not rows:
+            return "No data to visualize"
+        
+        # Simple text chart representation
+        chart_text = f"\n{chart_type.upper()} CHART:\n"
+        chart_text += "="*40 + "\n"
+        
+        # Get first two columns for simple visualization
+        if rows and len(rows[0]) >= 2:
+            keys = list(rows[0].keys())
+            for row in rows[:10]:  # Limit to 10 rows
+                label = str(row[keys[0]])
+                value = row[keys[1]]
+                if isinstance(value, (int, float)):
+                    bar_length = int(value / 10) if value > 0 else 0
+                    chart_text += f"{label:15} | {'#' * bar_length} {value}\n"
+                else:
+                    chart_text += f"{label:15} | {value}\n"
+        
+        chart_text += "="*40
+        return chart_text
+        
+    except Exception as e:
+        return f"Error creating chart: {str(e)}"
+
+def summarize_data(data_str: str, context: str = "") -> str:
+    """Create a summary using Gemini"""
+    try:
+        data = json.loads(data_str)
+        
+        if data.get("status") == "error":
+            return "Cannot summarize error result"
+        
+        rows = data.get("data", [])
+        if not rows:
+            return "No data to summarize"
+        
+        # Create prompt for Gemini
+        prompt = f"""
+        Summarize this data:
+        Context: {context}
+        Data (first 5 rows): {json.dumps(rows[:5], indent=2)}
+        Total rows: {len(rows)}
+        
+        Provide a brief, insightful summary.
+        """
+        
+        response = gemini_model.generate_content(prompt)
+        return response.text
+        
+    except Exception as e:
+        return f"Error in summarization: {str(e)}"
+
+class MinimalNLToSQLSystem:
+    def __init__(self):
+        """Initialize the minimal system"""
+        self.db = init_duckdb()
+        
+    def load_data(self, dataframes: Dict[str, pd.DataFrame]):
+        """Load dataframes into DuckDB"""
+        for table_name, df in dataframes.items():
+            # Register DataFrame as a table
+            self.db.register(table_name, df)
+            print(f"Loaded table: {table_name} with {len(df)} rows")
+    
+    def generate_sql(self, natural_query: str) -> Dict[str, Any]:
+        """Generate SQL from natural language"""
+        # Get table information
+        tables = self.db.execute("SHOW TABLES").fetchall()
+        schema_info = "Available tables:\n"
+        
+        for table in tables:
+            table_name = table[0]
+            schema_info += f"\nTable: {table_name}\n"
+            columns = self.db.execute(f"PRAGMA table_info({table_name})").fetchall()
+            for col in columns:
+                schema_info += f"  - {col[1]} ({col[2]})\n"
+        
+        prompt = f"""
+        Convert this query to SQL:
+        Query: {natural_query}
+        
+        {schema_info}
+        
+        Return only the SQL query, nothing else.
+        """
+        
+        response = gemini_model.generate_content(prompt)
+        sql = response.text.strip()
+        
+        # Remove any markdown formatting
+        sql = sql.replace('```sql', '').replace('```', '').strip()
+        
+        return {
+            "sql": sql,
+            "needs_chart": "chart" in natural_query.lower() or "visualiz" in natural_query.lower(),
+            "needs_summary": "summar" in natural_query.lower() or "insight" in natural_query.lower()
+        }
+    
+    def process_query(self, natural_query: str) -> Dict[str, Any]:
+        """Process a natural language query using CrewAI"""
+        
+        # Generate SQL
+        sql_info = self.generate_sql(natural_query)
+        
+        # Create simple agents without tools first
+        sql_agent = Agent(
+            role="SQL Executor",
+            goal="Execute SQL queries",
+            backstory="I execute database queries.",
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        viz_agent = Agent(
+            role="Visualizer",
+            goal="Create visualizations",
+            backstory="I create charts from data.",
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        summary_agent = Agent(
+            role="Analyst",
+            goal="Summarize data",
+            backstory="I provide data insights.",
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        # Create tasks
+        tasks = []
+        
+        # SQL execution task
+        sql_task = Task(
+            description=f"""Execute this SQL query and return the results:
+            {sql_info['sql']}
+            
+            Use the execute_query function with the SQL as parameter.
+            The function is available as: execute_query("{sql_info['sql']}")""",
+            agent=sql_agent,
+            expected_output="JSON string with query results"
+        )
+        tasks.append(sql_task)
+        
+        # Add visualization task if needed
+        if sql_info['needs_chart']:
+            viz_task = Task(
+                description="""Create a bar chart from the SQL results.
+                Use the create_chart_from_data function with the results from the previous task.
+                Function: create_chart_from_data(data_str, "bar")""",
+                agent=viz_agent,
+                expected_output="Text representation of chart",
+                context=[sql_task]
+            )
+            tasks.append(viz_task)
+        
+        # Add summary task if needed
+        if sql_info['needs_summary']:
+            summary_task = Task(
+                description=f"""Summarize the query results.
+                Use summarize_data function with results and context: "{natural_query}"
+                Function: summarize_data(data_str, "{natural_query}")""",
+                agent=summary_agent,
+                expected_output="Summary text",
+                context=[sql_task]
+            )
+            tasks.append(summary_task)
+        
+        # Create crew
+        agents = [sql_agent]
+        if sql_info['needs_chart']:
+            agents.append(viz_agent)
+        if sql_info['needs_summary']:
+            agents.append(summary_agent)
+        
+        crew = Crew(
+            agents=agents,
+            tasks=tasks,
+            process=Process.sequential,
+            verbose=True,
+            function_calling_llm=None  # Use default LLM
+        )
+        
+        # For now, manually execute the functions since tool integration is complex
+        results = {}
+        
+        try:
+            # Execute SQL
+            print(f"\nExecuting SQL: {sql_info['sql']}")
+            query_result = execute_query(sql_info['sql'])
+            results['query_result'] = query_result
+            
+            # Create chart if needed
+            if sql_info['needs_chart']:
+                print("\nCreating chart...")
+                chart = create_chart_from_data(query_result, "bar")
+                results['chart'] = chart
+            
+            # Create summary if needed
+            if sql_info['needs_summary']:
+                print("\nCreating summary...")
+                summary = summarize_data(query_result, natural_query)
+                results['summary'] = summary
+            
+            return {
+                "status": "success",
+                "sql": sql_info['sql'],
+                "results": results
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+
+# Test the minimal system
+def test_minimal_system():
+    """Test the minimal implementation"""
+    
+    # Create system
+    system = MinimalNLToSQLSystem()
+    
+    # Create sample data
+    sales_df = pd.DataFrame({
+        'product': ['Laptop', 'Mouse', 'Keyboard', 'Monitor', 'Headphones'],
+        'quantity': [10, 25, 15, 8, 12],
+        'revenue': [9990, 625, 1125, 2392, 1188]
+    })
+    
+    products_df = pd.DataFrame({
+        'name': ['Laptop', 'Mouse', 'Keyboard', 'Monitor', 'Headphones'],
+        'price': [999, 25, 75, 299, 99],
+        'category': ['Electronics', 'Accessories', 'Accessories', 'Electronics', 'Audio']
+    })
+    
+    # Load data
+    print("Loading sample data...")
+    system.load_data({
+        'sales': sales_df,
+        'products': products_df
+    })
+    
+    # Test queries
+    queries = [
+        "Show me total revenue by product",
+        "Create a chart showing quantities sold",
+        "Summarize the sales data"
+    ]
+    
+    for query in queries:
+        print(f"\n{'='*60}")
+        print(f"Query: {query}")
+        print('='*60)
+        
+        result = system.process_query(query)
+        
+        if result['status'] == 'success':
+            print(f"\nSQL: {result['sql']}")
+            
+            if 'query_result' in result['results']:
+                data = json.loads(result['results']['query_result'])
+                if data['status'] == 'success':
+                    print(f"\nRows returned: {data['row_count']}")
+                    print("Data:", json.dumps(data['data'], indent=2))
+            
+            if 'chart' in result['results']:
+                print(f"\n{result['results']['chart']}")
+            
+            if 'summary' in result['results']:
+                print(f"\nSummary: {result['results']['summary']}")
+        else:
+            print(f"Error: {result['error']}")
+
+if __name__ == "__main__":
+    test_minimal_system()

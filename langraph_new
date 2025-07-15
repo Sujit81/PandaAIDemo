@@ -1,0 +1,541 @@
+import json
+import pandas as pd
+from typing import Dict, Any, List, Optional, TypedDict, Annotated
+from dataclasses import dataclass
+import duckdb
+from sqlalchemy import create_engine, MetaData, inspect
+from sqlalchemy.engine import Engine
+import google.generativeai as genai
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+import traceback
+from tabulate import tabulate
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import logging
+import re
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# State definition for the graph
+class AgentState(TypedDict):
+    """State that flows through the graph"""
+    user_query: str
+    metadata: Dict[str, Any]
+    schemas: Dict[str, List[Dict[str, str]]]
+    sql_query: Optional[str]
+    query_result: Optional[pd.DataFrame]
+    tools_to_execute: Optional[List[Dict[str, Any]]]
+    current_tool_index: int
+    error_count: int
+    final_response: Optional[str]
+    intermediate_results: List[Dict[str, Any]]
+    messages: Annotated[List[dict], add_messages]
+
+
+@dataclass
+class DatabaseConfig:
+    """Database configuration"""
+    engine: Engine
+    metadata: Dict[str, Any]
+    dataframes: Dict[str, pd.DataFrame]
+
+
+class SQLAgentSystem:
+    def __init__(self, api_key: str):
+        """Initialize the SQL Agent System"""
+        self.api_key = api_key
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        self.db_config = None
+        self.graph = None
+
+    def setup_database(self, metadata: Dict[str, Any], dataframes: Dict[str, pd.DataFrame]):
+        """Setup DuckDB with provided metadata and dataframes"""
+        # Create DuckDB connection using SQLAlchemy
+        engine = create_engine('duckdb:///:memory:')
+
+        # Insert dataframes into DuckDB
+        with engine.connect() as conn:
+            for table_name, df in dataframes.items():
+                df.to_sql(table_name, conn, if_exists='replace', index=False)
+                logger.info(f"Inserted table {table_name} with {len(df)} rows")
+
+        self.db_config = DatabaseConfig(
+            engine=engine,
+            metadata=metadata,
+            dataframes=dataframes
+        )
+
+        # Build the LangGraph
+        self._build_graph()
+
+        return engine
+
+    def get_table_schemas(self) -> Dict[str, List[Dict[str, str]]]:
+        """Get schemas of all tables using SQLAlchemy"""
+        inspector = inspect(self.db_config.engine)
+        schemas = {}
+
+        for table_name in inspector.get_table_names():
+            columns = []
+            for column in inspector.get_columns(table_name):
+                columns.append({
+                    'name': column['name'],
+                    'type': str(column['type']),
+                    'nullable': column['nullable']
+                })
+            schemas[table_name] = columns
+
+        return schemas
+
+    def _build_graph(self):
+        """Build the LangGraph with dynamic routing"""
+        workflow = StateGraph(AgentState)
+
+        # Add nodes
+        workflow.add_node("process_query", self.process_query_node)
+        workflow.add_node("execute_sql", self.execute_sql_node)
+        workflow.add_node("execute_tools", self.execute_tools_node)
+        workflow.add_node("summarize", self.summarize_node)
+        workflow.add_node("chart", self.chart_node)
+        workflow.add_node("error_handler", self.error_handler_node)
+        workflow.add_node("format_response", self.format_response_node)
+
+        # Set entry point
+        workflow.set_entry_point("process_query")
+
+        # Add conditional edges
+        workflow.add_conditional_edges(
+            "process_query",
+            self.route_after_query_processing,
+            {
+                "execute_sql": "execute_sql",
+                "error": "error_handler",
+                "end": END
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "execute_sql",
+            self.route_after_sql_execution,
+            {
+                "execute_tools": "execute_tools",
+                "format_response": "format_response",
+                "error": "error_handler"
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "execute_tools",
+            self.route_tool_execution,
+            {
+                "summarize": "summarize",
+                "chart": "chart",
+                "next_tool": "execute_tools",
+                "format_response": "format_response"
+            }
+        )
+
+        workflow.add_edge("summarize", "execute_tools")
+        workflow.add_edge("chart", "execute_tools")
+
+        workflow.add_conditional_edges(
+            "error_handler",
+            self.route_after_error,
+            {
+                "retry": "process_query",
+                "end": "format_response"
+            }
+        )
+
+        workflow.add_edge("format_response", END)
+
+        self.graph = workflow.compile()
+
+    def process_query_node(self, state: AgentState) -> AgentState:
+        """Process natural language query with LLM"""
+        try:
+            schemas = self.get_table_schemas()
+            state['schemas'] = schemas
+
+            # Prepare prompt for LLM
+            prompt = f"""
+You are a SQL expert. Generate a SQL query for DuckDB based on the user's question.
+
+User Query: {state['user_query']}
+
+Available Tables and Metadata:
+{json.dumps(state['metadata'], indent=2)}
+
+Table Schemas:
+{json.dumps(schemas, indent=2)}
+
+Return ONLY a valid JSON response in this exact format:
+{{
+    "sql": "Your SQL query here",
+    "tools": [
+        {{
+            "node": "Summarization",
+            "LLMContext": "Summarization prompt if needed"
+        }},
+        {{
+            "node": "Charting", 
+            "LLMContext": "Charting instructions if needed"
+        }}
+    ]
+}}
+
+If no post-processing tools are needed, set "tools" to null.
+Only include tools that are actually needed for the user's query.
+IMPORTANT: Return ONLY the JSON object, no markdown formatting, no explanations.
+"""
+
+            response = self.model.generate_content(prompt)
+            response_text = response.text.strip()
+
+            logger.info(f"Raw LLM response: {response_text[:200]}...")
+
+            # Clean response text - remove markdown code blocks if present
+            if "```json" in response_text:
+                # Extract content between ```json and ```
+                start = response_text.find("```json") + 7
+                end = response_text.find("```", start)
+                if end != -1:
+                    response_text = response_text[start:end].strip()
+            elif "```" in response_text:
+                # Extract content between ``` and ```
+                start = response_text.find("```") + 3
+                end = response_text.find("```", start)
+                if end != -1:
+                    response_text = response_text[start:end].strip()
+
+            # Remove any remaining whitespace
+            response_text = response_text.strip()
+
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError as je:
+                logger.error(f"Failed to parse JSON: {response_text}")
+                # Try to extract JSON using regex as last resort
+                json_match = re.search(r'\{[\s\S]*\}', response_text)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    raise ValueError(f"Could not extract valid JSON from response: {je}")
+
+            state['sql_query'] = result['sql']
+            state['tools_to_execute'] = result.get('tools', []) if result.get('tools') else []
+            state['current_tool_index'] = 0
+
+            logger.info(f"Generated SQL: {result['sql']}")
+            logger.info(f"Tools to execute: {state['tools_to_execute']}")
+
+            return state
+
+        except Exception as e:
+            logger.error(f"Error in process_query_node: {str(e)}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            state['error_count'] = state.get('error_count', 0) + 1
+            state['messages'].append({
+                "role": "system",
+                "content": f"Error processing query: {str(e)}"
+            })
+            return state
+
+    def execute_sql_node(self, state: AgentState) -> AgentState:
+        """Execute SQL query (Python only, no LLM)"""
+        try:
+            with self.db_config.engine.connect() as conn:
+                result_df = pd.read_sql(state['sql_query'], conn)
+                state['query_result'] = result_df
+
+                # Print results as table in console
+                print("\n=== SQL Query Results ===")
+                print(tabulate(result_df, headers='keys', tablefmt='grid', showindex=False))
+                print(f"\nRows returned: {len(result_df)}")
+
+                state['intermediate_results'].append({
+                    'type': 'sql_result',
+                    'data': result_df.to_dict('records')
+                })
+
+            return state
+
+        except Exception as e:
+            logger.error(f"Error executing SQL: {str(e)}")
+            state['error_count'] = state.get('error_count', 0) + 1
+            state['messages'].append({
+                "role": "system",
+                "content": f"SQL execution error: {str(e)}"
+            })
+            return state
+
+    def execute_tools_node(self, state: AgentState) -> AgentState:
+        """Router node for tool execution"""
+        # This node just updates the current tool index
+        # Actual routing is done by route_tool_execution
+        return state
+
+    def summarize_node(self, state: AgentState) -> AgentState:
+        """Summarize content using LLM"""
+        try:
+            current_tool = state['tools_to_execute'][state['current_tool_index']]
+            df = state['query_result']
+
+            prompt = f"""
+{current_tool['LLMContext']}
+
+Data to summarize:
+{df.to_string()}
+
+Provide a clear, concise summary of the data.
+"""
+
+            response = self.model.generate_content(prompt)
+            summary = response.text
+
+            state['intermediate_results'].append({
+                'type': 'summary',
+                'content': summary
+            })
+
+            print(f"\n=== Summary ===\n{summary}")
+
+            state['current_tool_index'] += 1
+
+            return state
+
+        except Exception as e:
+            logger.error(f"Error in summarization: {str(e)}")
+            state['current_tool_index'] += 1
+            return state
+
+    def chart_node(self, state: AgentState) -> AgentState:
+        """Create charts (Python only, no LLM)"""
+        try:
+            df = state['query_result']
+
+            # Simple charting logic - can be extended
+            if len(df.columns) >= 2:
+                plt.figure(figsize=(10, 6))
+
+                # Determine chart type based on data
+                numeric_cols = df.select_dtypes(include=['number']).columns
+
+                if len(numeric_cols) >= 1:
+                    # Create appropriate chart
+                    if len(df) <= 20:  # Bar chart for small datasets
+                        df.plot(kind='bar', x=df.columns[0])
+                    else:  # Line chart for larger datasets
+                        df[numeric_cols].plot(kind='line')
+
+                    plt.title('Data Visualization')
+                    plt.tight_layout()
+
+                    # Save chart
+                    chart_path = f"chart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    plt.savefig(chart_path)
+                    plt.close()
+
+                    state['intermediate_results'].append({
+                        'type': 'chart',
+                        'path': chart_path
+                    })
+
+                    print(f"\n=== Chart saved to: {chart_path} ===")
+
+            state['current_tool_index'] += 1
+
+            return state
+
+        except Exception as e:
+            logger.error(f"Error creating chart: {str(e)}")
+            state['current_tool_index'] += 1
+            return state
+
+    def error_handler_node(self, state: AgentState) -> AgentState:
+        """Handle errors and retry logic"""
+        error_count = state.get('error_count', 0)
+
+        if error_count >= 3:
+            state['final_response'] = "Failed after 3 attempts. Please check your query and try again."
+            logger.error("Maximum retry attempts reached")
+        else:
+            logger.info(f"Retrying... Attempt {error_count + 1}/3")
+
+        return state
+
+    def format_response_node(self, state: AgentState) -> AgentState:
+        """Format final response"""
+        if not state.get('final_response'):
+            response_parts = []
+
+            # Add query result summary
+            if state.get('query_result') is not None:
+                df = state['query_result']
+                response_parts.append(f"Query executed successfully. Returned {len(df)} rows.")
+
+            # Add intermediate results
+            for result in state.get('intermediate_results', []):
+                if result['type'] == 'summary':
+                    response_parts.append(f"\nSummary:\n{result['content']}")
+                elif result['type'] == 'chart':
+                    response_parts.append(f"\nChart saved to: {result['path']}")
+
+            state['final_response'] = "\n".join(response_parts)
+
+        return state
+
+    # Routing functions
+    def route_after_query_processing(self, state: AgentState) -> str:
+        """Route after processing query"""
+        if state.get('error_count', 0) > 0:
+            return "error"
+        elif state.get('sql_query'):
+            return "execute_sql"
+        else:
+            return "end"
+
+    def route_after_sql_execution(self, state: AgentState) -> str:
+        """Route after SQL execution"""
+        if state.get('error_count', 0) > 0:
+            return "error"
+        elif state.get('tools_to_execute') and len(state['tools_to_execute']) > 0:
+            return "execute_tools"
+        else:
+            return "format_response"
+
+    def route_tool_execution(self, state: AgentState) -> str:
+        """Route tool execution dynamically"""
+        tools = state.get('tools_to_execute', [])
+        current_index = state.get('current_tool_index', 0)
+
+        if current_index >= len(tools):
+            return "format_response"
+
+        current_tool = tools[current_index]
+        node_name = current_tool['node'].lower()
+
+        if node_name == 'summarization':
+            return "summarize"
+        elif node_name == 'charting':
+            return "chart"
+        else:
+            # Skip unknown tools
+            state['current_tool_index'] += 1
+            return "next_tool"
+
+    def route_after_error(self, state: AgentState) -> str:
+        """Route after error handling"""
+        if state.get('error_count', 0) >= 3:
+            return "end"
+        else:
+            return "retry"
+
+    def process_query(self, user_query: str) -> pd.DataFrame:
+        """Main entry point to process a query"""
+        initial_state = {
+            'user_query': user_query,
+            'metadata': self.db_config.metadata,
+            'schemas': {},
+            'sql_query': None,
+            'query_result': None,
+            'tools_to_execute': None,
+            'current_tool_index': 0,
+            'error_count': 0,
+            'final_response': None,
+            'intermediate_results': [],
+            'messages': []
+        }
+
+        try:
+            # Run the graph
+            final_state = self.graph.invoke(initial_state)
+
+            print(f"\n=== Final Response ===\n{final_state['final_response']}")
+
+            # Return the dataframe for next conversation
+            result = final_state.get('query_result')
+            if result is not None:
+                return result
+            else:
+                return pd.DataFrame()
+
+        except Exception as e:
+            logger.error(f"Error in process_query: {str(e)}")
+            print(f"\n=== Error ===\nFailed to process query: {str(e)}")
+            return pd.DataFrame()
+
+
+# Example usage
+if __name__ == "__main__":
+    # Example metadata and dataframes
+    metadata = {
+        "tables": {
+            "sales": {
+                "dependencies": ["products", "customers"],
+                "description": "Sales transactions"
+            },
+            "products": {
+                "dependencies": [],
+                "description": "Product catalog"
+            },
+            "customers": {
+                "dependencies": [],
+                "description": "Customer information"
+            }
+        }
+    }
+
+    # Create sample dataframes
+    dataframes = {
+        "sales": pd.DataFrame({
+            "sale_id": [1, 2, 3, 4, 5],
+            "product_id": [101, 102, 101, 103, 102],
+            "customer_id": [1001, 1002, 1003, 1001, 1004],
+            "quantity": [2, 1, 3, 1, 2],
+            "sale_date": pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05']),
+            "total_amount": [200, 150, 300, 250, 300]
+        }),
+        "products": pd.DataFrame({
+            "product_id": [101, 102, 103],
+            "product_name": ["Widget A", "Widget B", "Widget C"],
+            "price": [100, 150, 250]
+        }),
+        "customers": pd.DataFrame({
+            "customer_id": [1001, 1002, 1003, 1004],
+            "customer_name": ["John Doe", "Jane Smith", "Bob Johnson", "Alice Brown"],
+            "city": ["New York", "Los Angeles", "Chicago", "Houston"]
+        })
+    }
+
+    # Initialize the system
+    agent = SQLAgentSystem(api_key="XX")
+
+    # Setup database
+    engine = agent.setup_database(metadata, dataframes)
+
+    # Example queries
+    queries = [
+        "Show me total sales by customer with a summary",
+        "What are the top selling products? Create a chart",
+        "Calculate average sale amount by city"
+    ]
+
+    for query in queries:
+        print(f"\n{'=' * 60}")
+        print(f"Processing query: {query}")
+        print('=' * 60)
+
+        result_df = agent.process_query(query)
+
+        # The result_df can be used for the next conversation
+        if not result_df.empty:
+            print(f"\nDataFrame available for next conversation: shape={result_df.shape}")
+        else:
+            print("\nNo data returned")
